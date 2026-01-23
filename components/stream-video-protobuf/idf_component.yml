@@ -1,0 +1,6 @@
+## IDF Component Manager Manifest File for stream-video-protobuf component
+## This component requires nanopb for protobuf code generation
+
+dependencies:
+  # Protobuf implementation (using LiveKit's nanopb from registry)
+  livekit/nanopb: "^0.4.9"

@@ -1,0 +1,8 @@
+description: Espressif audio effects
+issues: https://github.com/espressif/esp-adf/issues
+repository: git://github.com/espressif/esp-adf-libs.git
+repository_info:
+  commit_sha: 79c1769556c2e166f3f0ef3b6424e38d7069539e
+  path: esp_audio_effects
+url: https://github.com/espressif/esp-adf-libs/tree/master/esp_audio_effects
+version: 1.1.0

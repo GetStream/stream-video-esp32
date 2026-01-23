@@ -1,0 +1,10 @@
+dependencies:
+  idf: '>=4.4'
+description: Espressif Muxer to mux audio and video stream data into container
+issues: https://github.com/espressif/esp-adf/issues
+repository: git://github.com/espressif/esp-adf-libs.git
+repository_info:
+  commit_sha: d82cec5ddf551bedddba946e1fc3778b49ca9101
+  path: esp_muxer
+url: https://github.com/espressif/esp-adf-libs/tree/master/esp_muxer
+version: 1.1.2

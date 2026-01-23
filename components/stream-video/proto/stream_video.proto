@@ -1,0 +1,17 @@
+// Stream Video Protocol Buffer Definitions
+// This file will contain the basic proto definitions extracted from Stream Android SDK
+// Focus on signaling and SFU connection messages only
+
+syntax = "proto3";
+
+package stream.video;
+
+// TODO: Add basic proto message definitions for:
+// - Signaling messages
+// - SFU connection messages
+// - Participant management
+// - Media track information
+
+// Placeholder - will be populated in Phase 2
+
+

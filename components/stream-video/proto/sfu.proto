@@ -1,0 +1,148 @@
+// Stream Video SFU Protocol Buffer Definitions
+// Basic SFU connection and WebRTC signaling messages
+// Focus on essential messages only - no advanced features
+
+syntax = "proto3";
+
+package stream.video.sfu;
+
+enum PeerType {
+    PEER_TYPE_PUBLISHER_UNSPECIFIED = 0;
+    PEER_TYPE_SUBSCRIBER = 1;
+}
+
+message ParticipantCount {
+    uint32 total = 1;
+    uint32 anonymous = 2;
+}
+
+message CallState {
+    ParticipantCount participant_count = 3;
+}
+
+message PublishOption {
+}
+
+// Health check (client -> SFU)
+message HealthCheckRequest {
+}
+
+// Health check response (SFU -> client)
+message HealthCheckResponse {
+    ParticipantCount participant_count = 1;
+}
+
+message JoinRequest {
+    string token = 1;
+    string session_id = 2;
+    string subscriber_sdp = 3;
+    string publisher_sdp = 8;
+}
+
+message JoinResponse {
+    CallState call_state = 1;
+    bool reconnected = 2;
+    int32 fast_reconnect_deadline_seconds = 3;
+    repeated PublishOption publish_options = 4;
+}
+
+message SubscriberOffer {
+    bool ice_restart = 1;
+    string sdp = 2;
+}
+
+message PublisherAnswer {
+    string sdp = 1;
+}
+
+message ICETrickle {
+    PeerType peer_type = 1;
+    string ice_candidate = 2;
+}
+
+enum WebsocketReconnectStrategy {
+    WEBSOCKET_RECONNECT_STRATEGY_UNSPECIFIED = 0;
+}
+
+enum ErrorCode {
+    ERROR_CODE_UNSPECIFIED = 0;
+}
+
+message ErrorInfo {
+    ErrorCode code = 1;
+    string message = 2;
+    bool should_retry = 3;
+}
+
+message Error {
+    ErrorInfo error = 4;
+    WebsocketReconnectStrategy reconnect_strategy = 5;
+}
+
+// SFU request wrapper (client -> SFU)
+message SfuRequest {
+    oneof request_payload {
+        JoinRequest join_request = 1;
+        HealthCheckRequest health_check_request = 2;
+    }
+}
+
+// SFU event wrapper (SFU -> client)
+message SfuEvent {
+    oneof event_payload {
+        SubscriberOffer subscriber_offer = 1;
+        PublisherAnswer publisher_answer = 2;
+        ICETrickle ice_trickle = 5;
+        JoinResponse join_response = 13;
+        HealthCheckResponse health_check_response = 14;
+        Error error = 18;
+    }
+}
+
+// SDP messages for WebRTC
+message SdpOffer {
+    string sdp = 1;
+    string type = 2;  // "offer"
+    string track_id = 3;
+}
+
+message SdpAnswer {
+    string sdp = 1;
+    string type = 2;  // "answer"
+    string track_id = 3;
+}
+
+// ICE candidate messages
+message IceCandidate {
+    string candidate = 1;
+    string sdp_mid = 2;
+    int32 sdp_mline_index = 3;
+    string track_id = 4;
+}
+
+// SFU connection messages
+message SfuConnectRequest {
+    string session_id = 1;
+    string room_id = 2;
+    string user_id = 3;
+}
+
+message SfuConnectResponse {
+    bool success = 1;
+    string sfu_url = 2;
+    string error_message = 3;
+}
+
+// Track configuration
+message TrackConfig {
+    string track_id = 1;
+    string kind = 2;  // "audio" or "video"
+    bool enabled = 3;
+}
+
+// Media stream information
+message MediaStream {
+    string stream_id = 1;
+    repeated TrackConfig tracks = 2;
+}
+

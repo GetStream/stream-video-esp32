@@ -1,0 +1,107 @@
+// Stream Video Signaling Protocol Buffer Definitions
+// Basic signaling messages for Stream Video SDK
+// Focus on essential messages only - no advanced features
+
+syntax = "proto3";
+
+package stream.video.signaling;
+
+// Connection messages
+message ConnectRequest {
+    string user_id = 1;
+    string token = 2;
+    string session_id = 3;
+}
+
+message ConnectResponse {
+    bool success = 1;
+    string session_id = 2;
+    string error_message = 3;
+}
+
+message DisconnectRequest {
+    string reason = 1;
+}
+
+// Room messages
+message JoinRoomRequest {
+    string room_id = 1;
+    string user_id = 2;
+}
+
+message JoinRoomResponse {
+    bool success = 1;
+    string room_id = 2;
+    string error_message = 3;
+}
+
+message LeaveRoomRequest {
+    string room_id = 1;
+}
+
+// Track publishing messages
+message PublishTrackRequest {
+    string track_id = 1;
+    string kind = 2;  // "audio" or "video"
+    string track_type = 3;  // "camera", "microphone", etc.
+}
+
+message PublishTrackResponse {
+    bool success = 1;
+    string track_id = 2;
+    string error_message = 3;
+}
+
+message UnpublishTrackRequest {
+    string track_id = 1;
+}
+
+// Track subscription messages
+message SubscribeTrackRequest {
+    string track_id = 1;
+    string participant_id = 2;
+}
+
+message SubscribeTrackResponse {
+    bool success = 1;
+    string track_id = 2;
+    string error_message = 3;
+}
+
+message UnsubscribeTrackRequest {
+    string track_id = 1;
+}
+
+// Events (server -> client)
+message TrackPublishedEvent {
+    string track_id = 1;
+    string kind = 2;
+    string participant_id = 3;
+}
+
+message TrackUnpublishedEvent {
+    string track_id = 1;
+    string participant_id = 2;
+}
+
+message TrackSubscribedEvent {
+    string track_id = 1;
+    string kind = 2;
+    string participant_id = 3;
+}
+
+message ParticipantJoinedEvent {
+    string participant_id = 1;
+    string user_id = 2;
+}
+
+message ParticipantLeftEvent {
+    string participant_id = 1;
+}
+
+// Error message
+message ErrorResponse {
+    int32 code = 1;
+    string message = 2;
+}
+

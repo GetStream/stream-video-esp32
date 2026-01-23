@@ -1,0 +1,15 @@
+## IDF Component Manager Manifest File for stream-video component
+## This file declares the component's dependencies from the Component Manager
+
+dependencies:
+  # WebRTC component
+  espressif/esp_peer: "^1.2.7"
+  
+  # Media components
+  espressif/esp_capture: "*"
+  
+  # WebSocket client (required for signaling)
+  espressif/esp_websocket_client: "^1.6.1"
+  
+  # Protobuf implementation (using LiveKit's nanopb from registry)
+  livekit/nanopb: "^0.4.9"

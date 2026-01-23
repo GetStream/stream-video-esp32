@@ -1,0 +1,12 @@
+# Nanopb generator options file
+# This file configures nanopb code generation
+
+# Maximum size for string fields (adjust based on needs)
+*.*:max_size:256
+
+# Maximum count for repeated fields
+*.*:max_count:10
+
+# Allocate storage for all fields
+*.*:allocation_mode:STATIC
+

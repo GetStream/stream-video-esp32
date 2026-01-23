@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package stream.video.sfu.signal;
+
+import "sfu.proto";
+
+message SendAnswerRequest {
+  stream.video.sfu.PeerType peer_type = 1;
+  string sdp = 2;
+  string session_id = 3;
+}
+
+message SendAnswerResponse {
+  string error_message = 1;
+}
+
+message ICETrickle {
+  stream.video.sfu.PeerType peer_type = 1;
+  string ice_candidate = 2;
+  string session_id = 3;
+}
+
+message ICETrickleResponse {
+  string error_message = 1;
+}
