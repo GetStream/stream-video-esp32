@@ -24,8 +24,14 @@
 #include "esp_sntp.h"
 #include "nvs_flash.h"
 #include "esp_netif.h"
+#include "esp_psram.h"
+#include "esp_heap_caps.h"
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
+#include "lwip/inet.h"
 #include "stream_video.h"
 #include "stream_video_token.h"
+#include "media_publish.h"
 
 static const char *TAG = "main";
 
@@ -52,6 +58,106 @@ static bool g_flow_started = false;
 static TaskHandle_t g_flow_task = NULL;
 static bool g_join_complete = false;
 static bool g_join_success = false;
+static bool g_publish_started = false;
+
+static void stun_udp_probe(void)
+{
+    const char *host = "stun.l.google.com";
+    const char *port = "19302";
+    struct addrinfo hints = {
+        .ai_family = AF_INET,
+        .ai_socktype = SOCK_DGRAM,
+    };
+    struct addrinfo *res = NULL;
+    int err = getaddrinfo(host, port, &hints, &res);
+    if (err != 0 || !res) {
+        ESP_LOGE(TAG, "STUN probe: DNS failed (%d)", err);
+        return;
+    }
+
+    char ip_str[INET_ADDRSTRLEN] = {0};
+    struct sockaddr_in *addr = (struct sockaddr_in *)res->ai_addr;
+    inet_ntop(AF_INET, &addr->sin_addr, ip_str, sizeof(ip_str));
+    ESP_LOGI(TAG, "STUN probe: %s:%s -> %s", host, port, ip_str);
+
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        ESP_LOGE(TAG, "STUN probe: socket failed");
+        freeaddrinfo(res);
+        return;
+    }
+
+    struct timeval tv = {
+        .tv_sec = 2,
+        .tv_usec = 0,
+    };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    uint8_t req[20] = {
+        0x00, 0x01, 0x00, 0x00, // Binding Request, length 0
+        0x21, 0x12, 0xA4, 0x42, // Magic cookie
+        0x12, 0x34, 0x56, 0x78, // Transaction ID (12 bytes)
+        0x9A, 0xBC, 0xDE, 0xF0,
+        0x11, 0x22, 0x33, 0x44
+    };
+    int sent = sendto(sock, req, sizeof(req), 0, res->ai_addr, res->ai_addrlen);
+    if (sent < 0) {
+        ESP_LOGE(TAG, "STUN probe: send failed");
+        close(sock);
+        freeaddrinfo(res);
+        return;
+    }
+
+    uint8_t resp[128] = {0};
+    int recv_len = recvfrom(sock, resp, sizeof(resp), 0, NULL, NULL);
+    if (recv_len < 0) {
+        ESP_LOGE(TAG, "STUN probe: no response");
+    } else {
+        ESP_LOGI(TAG, "STUN probe: response %d bytes", recv_len);
+        if (recv_len >= 20) {
+            uint16_t msg_type = (uint16_t)((resp[0] << 8) | resp[1]);
+            uint16_t msg_len = (uint16_t)((resp[2] << 8) | resp[3]);
+            uint32_t cookie = (uint32_t)((resp[4] << 24) | (resp[5] << 16) | (resp[6] << 8) | resp[7]);
+            if (msg_type == 0x0101 && cookie == 0x2112A442 && recv_len >= (20 + msg_len)) {
+                int offset = 20;
+                while (offset + 4 <= recv_len) {
+                    uint16_t attr_type = (uint16_t)((resp[offset] << 8) | resp[offset + 1]);
+                    uint16_t attr_len = (uint16_t)((resp[offset + 2] << 8) | resp[offset + 3]);
+                    int value_offset = offset + 4;
+                    if (value_offset + attr_len > recv_len) {
+                        break;
+                    }
+                    if (attr_type == 0x0020 || attr_type == 0x0001) { // XOR-MAPPED-ADDRESS or MAPPED-ADDRESS
+                        if (attr_len >= 8) {
+                            uint8_t family = resp[value_offset + 1];
+                            uint16_t port = (uint16_t)((resp[value_offset + 2] << 8) | resp[value_offset + 3]);
+                            uint32_t addr = (uint32_t)((resp[value_offset + 4] << 24) | (resp[value_offset + 5] << 16) |
+                                                       (resp[value_offset + 6] << 8) | resp[value_offset + 7]);
+                            if (attr_type == 0x0020) {
+                                port ^= (uint16_t)(cookie >> 16);
+                                addr ^= cookie;
+                            }
+                            if (family == 0x01) { // IPv4
+                                ip4_addr_t ip4;
+                                ip4.addr = htonl(addr);
+                                ESP_LOGI(TAG, "STUN probe: mapped address %s:%u",
+                                         ip4addr_ntoa(&ip4), (unsigned)port);
+                                break;
+                            }
+                        }
+                    }
+                    offset = value_offset + attr_len;
+                    if (attr_len % 4 != 0) {
+                        offset += (4 - (attr_len % 4));
+                    }
+                }
+            }
+        }
+    }
+
+    close(sock);
+    freeaddrinfo(res);
+}
 
 static void on_join_result(const stream_video_join_result_t *result, void *user_data)
 {
@@ -68,6 +174,31 @@ static void on_join_result(const stream_video_join_result_t *result, void *user_
     } else {
         ESP_LOGE(TAG, "✗ Join result: %s",
                  result->error_message[0] ? result->error_message : "unknown error");
+    }
+}
+
+static void publish_task(void *arg)
+{
+    stream_video_client_handle_t client = (stream_video_client_handle_t)arg;
+    esp_err_t pub_err = media_publish_start(client);
+    if (pub_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start media publishing");
+        g_publish_started = false;
+    }
+    vTaskDelete(NULL);
+}
+
+static void on_sfu_connected(stream_video_client_handle_t client, void *user_data)
+{
+    (void)user_data;
+    if (g_publish_started) {
+        return;
+    }
+    g_publish_started = true;
+    ESP_LOGI(TAG, "SFU connected, starting media publishing");
+    if (xTaskCreate(publish_task, "media_publish", 8192, client, 5, NULL) != pdPASS) {
+        g_publish_started = false;
+        ESP_LOGE(TAG, "Failed to create media_publish task");
     }
 }
 
@@ -121,6 +252,16 @@ static void stream_flow_task(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "WiFi connected, starting Stream Video flow...");
 
+    bool psram_ok = esp_psram_is_initialized();
+    if (psram_ok) {
+        size_t psram_size = esp_psram_get_size();
+        size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        ESP_LOGI(TAG, "PSRAM initialized: %u bytes (free %u)",
+                 (unsigned)psram_size, (unsigned)psram_free);
+    } else {
+        ESP_LOGW(TAG, "PSRAM not initialized");
+    }
+
     sync_time();
 
     stream_video_join_call_params_t params = {
@@ -133,6 +274,8 @@ static void stream_flow_task(void *arg)
         .location = NULL,
         .result_cb = on_join_result,
         .user_data = NULL,
+        .sfu_connected_cb = on_sfu_connected,
+        .sfu_user_data = NULL,
     };
 
     stream_video_error_t err = stream_video_join_call(&params, &g_client);
@@ -158,8 +301,10 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        ESP_LOGI(TAG, "WiFi connected");
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
         g_wifi_connected = true;
+        stun_udp_probe();
 
         if (!g_flow_started) {
             g_flow_started = true;
@@ -211,6 +356,10 @@ static void wifi_init(void)
 
 void app_main(void)
 {
+    esp_log_level_set("AGENT", ESP_LOG_VERBOSE);
+    esp_log_level_set("ICE", ESP_LOG_VERBOSE);
+    esp_log_level_set("STUN", ESP_LOG_VERBOSE);
+    esp_log_level_set("TURN", ESP_LOG_VERBOSE);
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "Stream Video ESP32-S3 - Complete Flow");
     ESP_LOGI(TAG, "========================================");

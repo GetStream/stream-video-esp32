@@ -1,11 +1,11 @@
 idf_component_register(
     SRCS
         "main.c"
+        "media_publish.c"
     INCLUDE_DIRS
         "."
     REQUIRES
         stream-video
-        atomic_shim
         nvs_flash
         esp_wifi
         esp_netif
@@ -14,4 +14,8 @@ idf_component_register(
         esp_websocket_client
         mbedtls
         json
+        esp_capture
+        esp_video_codec
+        esp_audio_codec
+        esp_psram
 )

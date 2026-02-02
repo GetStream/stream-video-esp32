@@ -3,7 +3,7 @@
 
 dependencies:
   # WebRTC component
-  espressif/esp_peer: "^1.2.7"
+  espressif/esp_peer: "*"
   
   # Media components
   espressif/esp_capture: "*"

@@ -12,6 +12,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "esp_log.h"
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -129,6 +130,12 @@ static void on_sfu_event(stream_sfu_client_handle_t client,
         case STREAM_SFU_EVENT_CONNECTED:
             ESP_LOGI(TAG, "✓ Connected to SFU WebSocket");
             ESP_LOGI(TAG, "Ready for WebRTC negotiation");
+            if (user_data) {
+                stream_video_client_t *client = (stream_video_client_t *)user_data;
+                if (client->params.sfu_connected_cb) {
+                    client->params.sfu_connected_cb(client, client->params.sfu_user_data);
+                }
+            }
             break;
         case STREAM_SFU_EVENT_MESSAGE_RECEIVED:
             ESP_LOGI(TAG, "SFU message received (SDP/ICE)");
@@ -180,6 +187,33 @@ static stream_video_error_t on_join_call_response(
             esp_peer_ice_server_cfg_t *servers = NULL;
             size_t server_count = parse_ice_servers(response->credentials.ice_servers, &servers);
             if (server_count > 0 && servers) {
+#if defined(CONFIG_STREAM_VIDEO_STUN_OVERRIDE)
+                if (CONFIG_STREAM_VIDEO_STUN_OVERRIDE[0] != '\0') {
+                    for (size_t i = 0; i < server_count; ++i) {
+                        free(servers[i].stun_url);
+                        free(servers[i].user);
+                        free(servers[i].psw);
+                    }
+                    free(servers);
+                    servers = (esp_peer_ice_server_cfg_t *)calloc(1, sizeof(esp_peer_ice_server_cfg_t));
+                    if (servers) {
+                        servers[0].stun_url = strdup(CONFIG_STREAM_VIDEO_STUN_OVERRIDE);
+                        servers[0].user = strdup("");
+                        servers[0].psw = strdup("");
+                        server_count = 1;
+                        ESP_LOGI(TAG, "Using STUN override: %s", CONFIG_STREAM_VIDEO_STUN_OVERRIDE);
+                    } else {
+                        server_count = 0;
+                        ESP_LOGE(TAG, "Failed to allocate STUN override config");
+                    }
+                }
+#endif
+                for (size_t i = 0; i < server_count; ++i) {
+                    ESP_LOGI(TAG, "ICE server[%u]: url=%s user_len=%u",
+                             (unsigned)i,
+                             servers[i].stun_url ? servers[i].stun_url : "(null)",
+                             servers[i].user ? (unsigned)strlen(servers[i].user) : 0u);
+                }
                 stream_sfu_client_set_ice_servers(client->sfu_client, servers, server_count);
                 for (size_t i = 0; i < server_count; ++i) {
                     free(servers[i].stun_url);
@@ -406,7 +440,7 @@ stream_video_error_t stream_video_join_call(
     BaseType_t ok = xTaskCreate(
         join_flow_task,
         "stream_join",
-        8192,
+        CONFIG_STREAM_VIDEO_JOIN_TASK_STACK,
         client,
         5,
         &client->join_task);
@@ -442,5 +476,29 @@ stream_video_error_t stream_video_leave_call(stream_video_client_handle_t client
     free(client);
 
     return STREAM_VIDEO_ERR_OK;
+}
+
+stream_video_error_t stream_video_start_publishing(
+    stream_video_client_handle_t client_handle,
+    const stream_video_publish_params_t *params)
+{
+    stream_video_client_t *client = (stream_video_client_t *)client_handle;
+    if (!client || !params || !client->sfu_client || !params->sink) {
+        return STREAM_VIDEO_ERR_INVALID_ARG;
+    }
+    return stream_sfu_client_start_publishing(
+        client->sfu_client,
+        params->sink,
+        params->publish_audio,
+        params->publish_video);
+}
+
+stream_video_error_t stream_video_stop_publishing(stream_video_client_handle_t client_handle)
+{
+    stream_video_client_t *client = (stream_video_client_t *)client_handle;
+    if (!client || !client->sfu_client) {
+        return STREAM_VIDEO_ERR_INVALID_ARG;
+    }
+    return stream_sfu_client_stop_publishing(client->sfu_client);
 }
 

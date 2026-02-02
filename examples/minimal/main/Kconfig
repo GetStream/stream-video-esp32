@@ -1,0 +1,25 @@
+menu "Stream Video Example"
+
+config STREAM_VIDEO_FORCE_RELAY
+    bool "Force TURN relay (ICE relay only)"
+    default n
+    help
+        Force ICE transport policy to RELAY so only TURN candidates
+        are used for pairing.
+
+config STREAM_VIDEO_STUN_OVERRIDE
+    string "STUN server override (empty = use SFU list)"
+    default "stun:stun.l.google.com:19302"
+    help
+        Override ICE server list with a single STUN URL. Leave empty
+        to use the SFU-provided ICE servers.
+
+config STREAM_VIDEO_VENC_TASK_STACK
+    int "Video encoder task stack size"
+    range 32768 262144
+    default 131072
+    help
+        Stack size (bytes) for the video encoder task(s). Increase
+        if the H264 encoder overflows the stack.
+
+endmenu

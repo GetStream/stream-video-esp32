@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_peer_types.h"
+#include "esp_capture_sink.h"
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -165,6 +166,21 @@ stream_video_error_t stream_sfu_client_set_ice_servers(
     const esp_peer_ice_server_cfg_t *servers,
     size_t server_count
 );
+
+/**
+ * @brief Start publishing audio/video from an esp_capture sink
+ */
+stream_video_error_t stream_sfu_client_start_publishing(
+    stream_sfu_client_handle_t client,
+    esp_capture_sink_handle_t sink,
+    bool publish_audio,
+    bool publish_video
+);
+
+/**
+ * @brief Stop publishing and release publisher peer
+ */
+stream_video_error_t stream_sfu_client_stop_publishing(stream_sfu_client_handle_t client);
 
 /**
  * @brief Get SFU connection state

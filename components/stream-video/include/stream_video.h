@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "esp_capture_sink.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -51,6 +52,11 @@ typedef void (*stream_video_join_result_cb_t)(
     void *user_data
 );
 
+typedef void (*stream_video_sfu_connected_cb_t)(
+    stream_video_client_handle_t client,
+    void *user_data
+);
+
 /**
  * @brief Parameters for joining a call (SDK-managed flow)
  */
@@ -64,7 +70,18 @@ typedef struct {
     const char *location;      // Optional: Location hint (NULL = auto)
     stream_video_join_result_cb_t result_cb; // Result callback (optional)
     void *user_data;           // User context for callback
+    stream_video_sfu_connected_cb_t sfu_connected_cb; // SFU connected callback (optional)
+    void *sfu_user_data;       // User context for SFU callback
 } stream_video_join_call_params_t;
+
+/**
+ * @brief Parameters for publishing media from esp_capture
+ */
+typedef struct {
+    esp_capture_sink_handle_t sink;
+    bool publish_audio;
+    bool publish_video;
+} stream_video_publish_params_t;
 
 /**
  * @brief Initialize Stream Video SDK
@@ -108,6 +125,25 @@ stream_video_error_t stream_video_join_call(
  * @return stream_video_error_t Error code
  */
 stream_video_error_t stream_video_leave_call(stream_video_client_handle_t client);
+
+/**
+ * @brief Start publishing audio/video to the SFU
+ */
+stream_video_error_t stream_video_start_publishing(
+    stream_video_client_handle_t client,
+    const stream_video_publish_params_t *params);
+
+/**
+ * @brief Wait until the SFU WebSocket is connected
+ *
+ * @param client Client handle from stream_video_join_call
+ * @param timeout_ms Timeout in milliseconds
+ * @return stream_video_error_t Error code
+ */
+/**
+ * @brief Stop publishing audio/video
+ */
+stream_video_error_t stream_video_stop_publishing(stream_video_client_handle_t client);
 
 #ifdef __cplusplus
 }

@@ -8,6 +8,7 @@ set(PROJECT_NAME "minimal-example")
 
 # Add components directory (relative to project root)
 set(EXTRA_COMPONENT_DIRS "../../components")
+set(EXCLUDE_COMPONENTS "atomic_shim")
 
 # Include ESP-IDF build system
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

@@ -3,8 +3,11 @@
 
 dependencies:
   # Stream Video SDK dependencies
-  espressif/esp_peer: "^1.2.7"
+  espressif/esp_peer: "*"
   espressif/esp_capture: "*"
+  espressif/esp_video_codec: "*"
+  # Optional audio encoder (enables Opus if available)
+  espressif/esp_audio_codec: "*"
   
   # WebSocket client (required for signaling)
   espressif/esp_websocket_client: "^1.6.1"

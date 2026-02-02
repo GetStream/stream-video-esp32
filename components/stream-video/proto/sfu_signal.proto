@@ -23,3 +23,15 @@ message ICETrickle {
 message ICETrickleResponse {
   string error_message = 1;
 }
+
+message SetPublisherRequest {
+  string sdp = 1;
+  string session_id = 2;
+}
+
+message SetPublisherResponse {
+  string sdp = 1;
+  string session_id = 2;
+  bool ice_restart = 3;
+  string error_message = 4;
+}

@@ -8,6 +8,7 @@
 
 #include "stream_video_sfu.h"
 #include "esp_log.h"
+#include "sdkconfig.h"
 #include "esp_websocket_client.h"
 #include "esp_crt_bundle.h"
 #include "sfu.pb.h"
@@ -17,6 +18,8 @@
 #include "esp_peer.h"
 #include "esp_peer_default.h"
 #include "esp_http_client.h"
+#include "esp_capture_sink.h"
+#include "esp_capture_types.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -24,6 +27,9 @@
 #include <stdlib.h>
 
 static const char *TAG = "stream_sfu";
+
+#define SFU_PEER_TASK_STACK_BYTES 16384
+#define SFU_PUB_TASK_STACK_BYTES 16384
 
 // Event bits for SFU WebSocket events
 #define SFU_CONNECTED_BIT    BIT0
@@ -46,6 +52,13 @@ struct stream_sfu_client {
     char ws_headers[4096];
     esp_peer_handle_t peer;
     TaskHandle_t peer_task;
+    esp_peer_handle_t pub_peer;
+    TaskHandle_t pub_task;
+    TaskHandle_t publish_task;
+    esp_capture_sink_handle_t publish_sink;
+    bool publish_audio;
+    bool publish_video;
+    bool publish_running;
     esp_peer_ice_server_cfg_t *ice_servers;
     size_t ice_server_count;
 };
@@ -199,6 +212,177 @@ static stream_video_error_t sfu_send_signal_request(
     return STREAM_VIDEO_ERR_OK;
 }
 
+static stream_video_error_t sfu_send_signal_request_with_response(
+    stream_sfu_client_handle_t client,
+    const char *path,
+    const uint8_t *payload,
+    size_t payload_len,
+    uint8_t **response_out,
+    size_t *response_len_out)
+{
+    if (!client || !client->http_url[0] || !path || !payload || payload_len == 0 ||
+        !response_out || !response_len_out) {
+        return STREAM_VIDEO_ERR_INVALID_ARG;
+    }
+
+    char url[512];
+    const char *sep = (client->http_url[strlen(client->http_url) - 1] == '/') ? "" : "/";
+    int url_len = snprintf(url, sizeof(url), "%s%s%s", client->http_url, sep, path);
+    if (url_len <= 0 || url_len >= (int)sizeof(url)) {
+        return STREAM_VIDEO_ERR_INVALID_ARG;
+    }
+
+    esp_http_client_config_t config = {
+        .url = url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 15000,
+    };
+    esp_http_client_handle_t http = esp_http_client_init(&config);
+    if (!http) {
+        return STREAM_VIDEO_ERR_FAIL;
+    }
+
+    esp_http_client_set_method(http, HTTP_METHOD_POST);
+    esp_http_client_set_header(http, "Authorization", client->join_token);
+    esp_http_client_set_header(http, "stream-auth-type", "jwt");
+    esp_http_client_set_header(http, "Content-Type", "application/protobuf");
+    esp_http_client_set_header(http, "Accept", "application/protobuf");
+
+    esp_err_t err = esp_http_client_open(http, payload_len);
+    if (err != ESP_OK) {
+        esp_http_client_cleanup(http);
+        return STREAM_VIDEO_ERR_NETWORK;
+    }
+    int written = esp_http_client_write(http, (const char *)payload, payload_len);
+    if (written < 0) {
+        esp_http_client_close(http);
+        esp_http_client_cleanup(http);
+        return STREAM_VIDEO_ERR_NETWORK;
+    }
+
+    int status_code = esp_http_client_fetch_headers(http);
+    int content_len = esp_http_client_get_content_length(http);
+    (void)status_code;
+
+    size_t buf_size = content_len > 0 ? (size_t)content_len : 2048;
+    uint8_t *buffer = (uint8_t *)malloc(buf_size);
+    if (!buffer) {
+        esp_http_client_close(http);
+        esp_http_client_cleanup(http);
+        return STREAM_VIDEO_ERR_NO_MEM;
+    }
+
+    size_t total = 0;
+    while (1) {
+        if (total == buf_size) {
+            size_t new_size = buf_size * 2;
+            uint8_t *tmp = (uint8_t *)realloc(buffer, new_size);
+            if (!tmp) {
+                free(buffer);
+                esp_http_client_close(http);
+                esp_http_client_cleanup(http);
+                return STREAM_VIDEO_ERR_NO_MEM;
+            }
+            buffer = tmp;
+            buf_size = new_size;
+        }
+        int read = esp_http_client_read(http, (char *)buffer + total, buf_size - total);
+        if (read <= 0) {
+            break;
+        }
+        total += (size_t)read;
+    }
+
+    int http_status = esp_http_client_get_status_code(http);
+    esp_http_client_close(http);
+    esp_http_client_cleanup(http);
+
+    if (http_status < 200 || http_status >= 300) {
+        ESP_LOGE(TAG, "SFU signal request failed: HTTP %d", http_status);
+        free(buffer);
+        return STREAM_VIDEO_ERR_NETWORK;
+    }
+
+    *response_out = buffer;
+    *response_len_out = total;
+    return STREAM_VIDEO_ERR_OK;
+}
+
+static stream_video_error_t sfu_send_set_publisher_http(
+    stream_sfu_client_handle_t client,
+    const char *sdp)
+{
+    if (!client || !sdp || !client->join_session_id[0]) {
+        return STREAM_VIDEO_ERR_INVALID_ARG;
+    }
+
+    uint8_t buffer[4096];
+    stream_video_sfu_signal_SetPublisherRequest request =
+        stream_video_sfu_signal_SetPublisherRequest_init_zero;
+    request.sdp.funcs.encode = encode_string_cb;
+    request.sdp.arg = (void *)sdp;
+    request.session_id.funcs.encode = encode_string_cb;
+    request.session_id.arg = (void *)client->join_session_id;
+
+    pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+    if (!pb_encode(&stream, stream_video_sfu_signal_SetPublisherRequest_fields, &request)) {
+        ESP_LOGE(TAG, "Failed to encode SetPublisherRequest");
+        return STREAM_VIDEO_ERR_FAIL;
+    }
+
+    uint8_t *resp = NULL;
+    size_t resp_len = 0;
+    stream_video_error_t err = sfu_send_signal_request_with_response(
+        client,
+        "stream.video.sfu.signal.SignalServer/SetPublisher",
+        buffer,
+        stream.bytes_written,
+        &resp,
+        &resp_len);
+    if (err != STREAM_VIDEO_ERR_OK) {
+        return err;
+    }
+
+    char answer_buf[4096] = {0};
+    char session_buf[128] = {0};
+    char error_buf[256] = {0};
+    sfu_string_buffer_t answer_ctx = { .buffer = answer_buf, .capacity = sizeof(answer_buf) };
+    sfu_string_buffer_t session_ctx = { .buffer = session_buf, .capacity = sizeof(session_buf) };
+    sfu_string_buffer_t error_ctx = { .buffer = error_buf, .capacity = sizeof(error_buf) };
+    stream_video_sfu_signal_SetPublisherResponse response =
+        stream_video_sfu_signal_SetPublisherResponse_init_zero;
+    response.sdp.funcs.decode = decode_string_cb;
+    response.sdp.arg = &answer_ctx;
+    response.session_id.funcs.decode = decode_string_cb;
+    response.session_id.arg = &session_ctx;
+    response.error_message.funcs.decode = decode_string_cb;
+    response.error_message.arg = &error_ctx;
+
+    pb_istream_t istream = pb_istream_from_buffer(resp, resp_len);
+    if (!pb_decode(&istream, stream_video_sfu_signal_SetPublisherResponse_fields, &response)) {
+        ESP_LOGE(TAG, "Failed to decode SetPublisherResponse");
+        free(resp);
+        return STREAM_VIDEO_ERR_FAIL;
+    }
+    free(resp);
+
+    if (error_buf[0]) {
+        ESP_LOGE(TAG, "SetPublisher error: %s", error_buf);
+        return STREAM_VIDEO_ERR_FAIL;
+    }
+
+    if (answer_buf[0] && client->pub_peer) {
+        esp_peer_msg_t msg = {
+            .type = ESP_PEER_MSG_TYPE_SDP,
+            .data = (uint8_t *)answer_buf,
+            .size = (int)strlen(answer_buf),
+        };
+        esp_peer_send_msg(client->pub_peer, &msg);
+        ESP_LOGI(TAG, "Publisher answer applied");
+    }
+    return STREAM_VIDEO_ERR_OK;
+}
+
 static stream_video_error_t sfu_send_answer_http(
     stream_sfu_client_handle_t client,
     stream_video_sfu_PeerType peer_type,
@@ -280,7 +464,28 @@ static int peer_msg_handler(esp_peer_msg_t *info, void *ctx)
         sfu_send_answer_http(client, stream_video_sfu_PeerType_PEER_TYPE_SUBSCRIBER, (const char *)info->data);
     } else if (info->type == ESP_PEER_MSG_TYPE_CANDIDATE) {
         ESP_LOGI(TAG, "Peer generated ICE candidate (%d bytes)", info->size);
+        ESP_LOGI(TAG, "Peer ICE candidate: %.*s", info->size, (const char *)info->data);
         sfu_send_ice_trickle_http(client, stream_video_sfu_PeerType_PEER_TYPE_SUBSCRIBER, (const char *)info->data);
+    }
+
+    return 0;
+}
+
+static int peer_msg_handler_pub(esp_peer_msg_t *info, void *ctx)
+{
+    stream_sfu_client_handle_t client = (stream_sfu_client_handle_t)ctx;
+    if (!client || !info || !info->data) {
+        return 0;
+    }
+
+    if (info->type == ESP_PEER_MSG_TYPE_SDP) {
+        ESP_LOGI(TAG, "Publisher generated SDP offer (%d bytes)", info->size);
+        sfu_send_set_publisher_http(client, (const char *)info->data);
+    } else if (info->type == ESP_PEER_MSG_TYPE_CANDIDATE) {
+        ESP_LOGI(TAG, "Publisher generated ICE candidate (%d bytes)", info->size);
+        ESP_LOGI(TAG, "Publisher ICE candidate: %.*s", info->size, (const char *)info->data);
+        sfu_send_ice_trickle_http(client, stream_video_sfu_PeerType_PEER_TYPE_PUBLISHER_UNSPECIFIED,
+                                  (const char *)info->data);
     }
 
     return 0;
@@ -296,6 +501,46 @@ static void peer_loop_task(void *arg)
     vTaskDelete(NULL);
 }
 
+static void pub_peer_loop_task(void *arg)
+{
+    stream_sfu_client_handle_t client = (stream_sfu_client_handle_t)arg;
+    while (client && client->pub_peer) {
+        esp_peer_main_loop(client->pub_peer);
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    vTaskDelete(NULL);
+}
+
+static void publish_task(void *arg)
+{
+    stream_sfu_client_handle_t client = (stream_sfu_client_handle_t)arg;
+    while (client && client->publish_running && client->publish_sink && client->pub_peer) {
+        esp_capture_stream_frame_t frame = {};
+        esp_capture_err_t err = esp_capture_sink_acquire_frame(client->publish_sink, &frame, false);
+        if (err == ESP_CAPTURE_ERR_OK) {
+            if (frame.stream_type == ESP_CAPTURE_STREAM_TYPE_VIDEO && client->publish_video) {
+                esp_peer_video_frame_t vframe = {
+                    .pts = frame.pts,
+                    .data = frame.data,
+                    .size = frame.size,
+                };
+                esp_peer_send_video(client->pub_peer, &vframe);
+            } else if (frame.stream_type == ESP_CAPTURE_STREAM_TYPE_AUDIO && client->publish_audio) {
+                esp_peer_audio_frame_t aframe = {
+                    .pts = frame.pts,
+                    .data = frame.data,
+                    .size = frame.size,
+                };
+                esp_peer_send_audio(client->pub_peer, &aframe);
+            }
+            esp_capture_sink_release_frame(client->publish_sink, &frame);
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+    vTaskDelete(NULL);
+}
+
 static stream_video_error_t sfu_peer_ensure(stream_sfu_client_handle_t client)
 {
     if (!client || client->peer) {
@@ -303,14 +548,17 @@ static stream_video_error_t sfu_peer_ensure(stream_sfu_client_handle_t client)
     }
 
     ESP_LOGI(TAG, "Creating peer connection (subscriber)");
-    esp_peer_default_cfg_t default_cfg = {
-        .agent_recv_timeout = 100,
-    };
+    esp_peer_default_cfg_t default_cfg = {0};
     esp_peer_cfg_t cfg = {
         .server_lists = client->ice_servers,
         .server_num = (uint8_t)client->ice_server_count,
         .role = ESP_PEER_ROLE_CONTROLLED,
-        .ice_trans_policy = ESP_PEER_ICE_TRANS_POLICY_ALL,
+        .ice_trans_policy =
+#if CONFIG_STREAM_VIDEO_FORCE_RELAY
+            ESP_PEER_ICE_TRANS_POLICY_RELAY,
+#else
+            ESP_PEER_ICE_TRANS_POLICY_ALL,
+#endif
         .audio_dir = ESP_PEER_MEDIA_DIR_RECV_ONLY,
         .video_dir = ESP_PEER_MEDIA_DIR_RECV_ONLY,
         .audio_info = {
@@ -347,7 +595,65 @@ static stream_video_error_t sfu_peer_ensure(stream_sfu_client_handle_t client)
     }
 
     ESP_LOGI(TAG, "Peer connection started");
-    xTaskCreate(peer_loop_task, "sfu_peer", 8192, client, 5, &client->peer_task);
+    xTaskCreate(peer_loop_task, "sfu_peer", SFU_PEER_TASK_STACK_BYTES, client, 5, &client->peer_task);
+    return STREAM_VIDEO_ERR_OK;
+}
+
+static stream_video_error_t sfu_pub_peer_ensure(stream_sfu_client_handle_t client)
+{
+    if (!client || client->pub_peer) {
+        return STREAM_VIDEO_ERR_OK;
+    }
+
+    ESP_LOGI(TAG, "Creating publisher peer connection");
+    esp_peer_default_cfg_t default_cfg = {0};
+    esp_peer_cfg_t cfg = {
+        .server_lists = client->ice_servers,
+        .server_num = (uint8_t)client->ice_server_count,
+        .role = ESP_PEER_ROLE_CONTROLLING,
+        .ice_trans_policy =
+#if CONFIG_STREAM_VIDEO_FORCE_RELAY
+            ESP_PEER_ICE_TRANS_POLICY_RELAY,
+#else
+            ESP_PEER_ICE_TRANS_POLICY_ALL,
+#endif
+        .audio_dir = ESP_PEER_MEDIA_DIR_SEND_ONLY,
+        .video_dir = ESP_PEER_MEDIA_DIR_SEND_ONLY,
+        .audio_info = {
+            .codec = ESP_PEER_AUDIO_CODEC_OPUS,
+            .sample_rate = 48000,
+            .channel = 2,
+        },
+        .video_info = {
+            .codec = ESP_PEER_VIDEO_CODEC_H264,
+            .width = 1280,
+            .height = 720,
+            .fps = 30,
+        },
+        .enable_data_channel = true,
+        .manual_ch_create = false,
+        .extra_cfg = &default_cfg,
+        .extra_size = sizeof(default_cfg),
+        .on_state = peer_state_handler,
+        .on_msg = peer_msg_handler_pub,
+        .ctx = client,
+    };
+
+    if (esp_peer_open(&cfg, esp_peer_get_default_impl(), &client->pub_peer) != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "Failed to create publisher peer");
+        client->pub_peer = NULL;
+        return STREAM_VIDEO_ERR_FAIL;
+    }
+
+    if (esp_peer_new_connection(client->pub_peer) != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "Failed to start publisher peer");
+        esp_peer_close(client->pub_peer);
+        client->pub_peer = NULL;
+        return STREAM_VIDEO_ERR_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Publisher peer started");
+    xTaskCreate(pub_peer_loop_task, "sfu_pub", SFU_PUB_TASK_STACK_BYTES, client, 5, &client->pub_task);
     return STREAM_VIDEO_ERR_OK;
 }
 
@@ -540,13 +846,22 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
                         case stream_video_sfu_SfuEvent_ice_trickle_tag:
                             ESP_LOGI(TAG, "SFU ICE trickle received");
                             ESP_LOGI(TAG, "ICE candidate bytes: %u", (unsigned)ice_ctx.length);
-                            if (ice_buf[0] && client->peer) {
-                                esp_peer_msg_t msg = {
-                                    .type = ESP_PEER_MSG_TYPE_CANDIDATE,
-                                    .data = (uint8_t *)ice_buf,
-                                    .size = (int)strlen(ice_buf),
-                                };
-                                esp_peer_send_msg(client->peer, &msg);
+                            if (ice_buf[0]) {
+                                esp_peer_handle_t target = NULL;
+                                if (event.event_payload.ice_trickle.peer_type ==
+                                    stream_video_sfu_PeerType_PEER_TYPE_SUBSCRIBER) {
+                                    target = client->peer;
+                                } else {
+                                    target = client->pub_peer;
+                                }
+                                if (target) {
+                                    esp_peer_msg_t msg = {
+                                        .type = ESP_PEER_MSG_TYPE_CANDIDATE,
+                                        .data = (uint8_t *)ice_buf,
+                                        .size = (int)strlen(ice_buf),
+                                    };
+                                    esp_peer_send_msg(target, &msg);
+                                }
                             }
                             break;
                         case stream_video_sfu_SfuEvent_join_response_tag:
@@ -665,6 +980,13 @@ stream_video_error_t stream_sfu_client_create(
     client->ws_headers[0] = '\0';
     client->peer = NULL;
     client->peer_task = NULL;
+    client->pub_peer = NULL;
+    client->pub_task = NULL;
+    client->publish_task = NULL;
+    client->publish_sink = NULL;
+    client->publish_audio = false;
+    client->publish_video = false;
+    client->publish_running = false;
     client->ice_servers = NULL;
     client->ice_server_count = 0;
     xTaskCreate(sfu_health_monitor_task, "sfu_health", 4096, client, 5, &client->health_task);
@@ -700,6 +1022,16 @@ void stream_sfu_client_destroy(stream_sfu_client_handle_t client)
     }
     if (client->peer_task) {
         vTaskDelete(client->peer_task);
+    }
+    if (client->publish_task) {
+        vTaskDelete(client->publish_task);
+    }
+    if (client->pub_peer) {
+        esp_peer_close(client->pub_peer);
+        client->pub_peer = NULL;
+    }
+    if (client->pub_task) {
+        vTaskDelete(client->pub_task);
     }
     if (client->ice_servers) {
         for (size_t i = 0; i < client->ice_server_count; ++i) {
@@ -832,6 +1164,58 @@ stream_video_error_t stream_sfu_client_set_ice_servers(
         client->ice_servers[i].psw = strdup(servers[i].psw);
     }
     client->ice_server_count = server_count;
+    return STREAM_VIDEO_ERR_OK;
+}
+
+stream_video_error_t stream_sfu_client_start_publishing(
+    stream_sfu_client_handle_t client,
+    esp_capture_sink_handle_t sink,
+    bool publish_audio,
+    bool publish_video)
+{
+    if (!client || !sink) {
+        return STREAM_VIDEO_ERR_INVALID_ARG;
+    }
+    if (client->state != STREAM_SFU_STATE_CONNECTED) {
+        return STREAM_VIDEO_ERR_INVALID_STATE;
+    }
+
+    stream_video_error_t err = sfu_pub_peer_ensure(client);
+    if (err != STREAM_VIDEO_ERR_OK) {
+        return err;
+    }
+
+    client->publish_sink = sink;
+    client->publish_audio = publish_audio;
+    client->publish_video = publish_video;
+    client->publish_running = true;
+
+    if (!client->publish_task) {
+        xTaskCreate(publish_task, "sfu_publish", 8192, client, 5, &client->publish_task);
+    }
+
+    return STREAM_VIDEO_ERR_OK;
+}
+
+stream_video_error_t stream_sfu_client_stop_publishing(stream_sfu_client_handle_t client)
+{
+    if (!client) {
+        return STREAM_VIDEO_ERR_INVALID_ARG;
+    }
+    client->publish_running = false;
+    client->publish_sink = NULL;
+    if (client->publish_task) {
+        vTaskDelete(client->publish_task);
+        client->publish_task = NULL;
+    }
+    if (client->pub_peer) {
+        esp_peer_close(client->pub_peer);
+        client->pub_peer = NULL;
+    }
+    if (client->pub_task) {
+        vTaskDelete(client->pub_task);
+        client->pub_task = NULL;
+    }
     return STREAM_VIDEO_ERR_OK;
 }
 

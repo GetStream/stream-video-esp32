@@ -1,0 +1,19 @@
+menu "Stream Video SDK"
+
+config STREAM_VIDEO_JOIN_TASK_STACK
+    int "Join flow task stack size"
+    range 4096 32768
+    default 12288
+    help
+        Stack size (bytes) for the join flow task. Increase on
+        memory-constrained boards or when enabling more features.
+
+config STREAM_VIDEO_VENC_TASK_STACK
+    int "Video encoder task stack size"
+    range 16384 131072
+    default 65536
+    help
+        Stack size (bytes) for video encoder tasks (venc_0/venc_1).
+        Increase if the encoder stack overflows.
+
+endmenu
