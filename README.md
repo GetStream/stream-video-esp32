@@ -2,7 +2,7 @@
 
 Stream Video SDK for ESP32-S3 - Real-time video, audio, and data for embedded projects.
 
-This SDK ports the Stream Video Android SDK's signaling and SFU connection logic to ESP32-S3, while using the same WebRTC and media libraries as LiveKit's ESP32 SDK.
+This SDK provides Stream Video signaling and SFU connectivity on ESP32-S3 with integrated WebRTC and media components for embedded use.
 
 ## Features
 
@@ -19,7 +19,7 @@ This SDK ports the Stream Video Android SDK's signaling and SFU connection logic
 
 ## Dependencies
 
-This SDK uses the following components (same as LiveKit ESP32 SDK):
+This SDK uses the following components :
 
 - `esp_peer` (~1.2.7): Espressif WebRTC component
 - `esp_capture`: Media capture component
@@ -42,12 +42,43 @@ dependencies:
   GetStream/stream-video-esp32: "^0.1.0"
 ```
 
+## ESP-IDF Setup (macOS)
+
+Step-by-step install for macOS (Apple Silicon or Intel):
+
+1. Install prerequisites:
+   ```bash
+   brew install cmake ninja dfu-util ccache git
+   ```
+2. Clone ESP-IDF:
+   ```bash
+   mkdir -p ~/esp
+   cd ~/esp
+   git clone -b v5.4 --recursive https://github.com/espressif/esp-idf.git
+   ```
+3. Install ESP-IDF tools:
+   ```bash
+   cd ~/esp/esp-idf
+   ./install.sh esp32s3
+   ```
+4. Export the environment (each new terminal):
+   ```bash
+   . $HOME/esp/esp-idf/export.sh
+   ```
+5. Optional: auto-export for zsh by adding this line to `~/.zshrc`:
+   ```bash
+   . $HOME/esp/esp-idf/export.sh
+   ```
+
 ## Getting Started
 
 ### Basic Usage
 
 ```c
+#include "esp_log.h"
 #include "stream_video.h"
+
+static const char *TAG = "app";
 
 void app_main(void)
 {
@@ -69,6 +100,46 @@ See the `examples/` directory for complete examples:
 - **minimal**: Basic connection with audio
 - **minimal_video**: Audio + video publishing
 - **voice_agent**: AI agent interaction
+
+### Run the minimal example
+
+1. Open the example:
+   ```bash
+   cd examples/minimal
+   ```
+2. Set the target:
+   ```bash
+   idf.py set-target esp32s3
+   ```
+3. Configure WiFi and video quality in menuconfig:
+   ```bash
+   idf.py menuconfig
+   ```
+   Navigate to `Stream Video Example` and update WiFi SSID/password and the video quality settings (width/height/fps/bitrate).
+4. Build, flash, and monitor:
+   ```bash
+   idf.py build
+   idf.py flash monitor
+   ```
+
+### Where to change example values
+
+- `examples/minimal/main/main.c`: Stream environment, user, and call settings.
+- `examples/minimal/main/Kconfig`: Menuconfig options for WiFi, STUN, and video quality.
+- `examples/minimal/sdkconfig.defaults`: Default project values used when you first configure the project.
+
+### Default values and menuconfig overrides
+
+The minimal example ships with defaults in `examples/minimal/sdkconfig.defaults`. These are the starting values before you run `menuconfig`:
+
+- WiFi SSID: `"Pixel8"`
+- WiFi password: `""` (empty)
+- Video width/height: `640x480`
+- Video FPS: `25`
+- Video bitrate: `800000`
+- Camera format: `YUV422`
+
+To change WiFi credentials or video quality after the first configure, run `idf.py menuconfig` and edit the settings under `Stream Video Example`. Changes are saved to `sdkconfig` in the example directory and override the defaults.
 
 ## API Reference
 
