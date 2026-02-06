@@ -3,6 +3,7 @@ syntax = "proto3";
 package stream.video.sfu.signal;
 
 import "sfu.proto";
+import "models.proto";
 
 message SendAnswerRequest {
   stream.video.sfu.PeerType peer_type = 1;
@@ -11,7 +12,7 @@ message SendAnswerRequest {
 }
 
 message SendAnswerResponse {
-  string error_message = 1;
+  stream.video.sfu.models.Error error = 4;
 }
 
 message ICETrickle {
@@ -21,17 +22,18 @@ message ICETrickle {
 }
 
 message ICETrickleResponse {
-  string error_message = 1;
+  stream.video.sfu.models.Error error = 4;
 }
 
 message SetPublisherRequest {
   string sdp = 1;
   string session_id = 2;
+  repeated stream.video.sfu.models.TrackInfo tracks = 3;
 }
 
 message SetPublisherResponse {
   string sdp = 1;
   string session_id = 2;
   bool ice_restart = 3;
-  string error_message = 4;
+  stream.video.sfu.models.Error error = 4;
 }

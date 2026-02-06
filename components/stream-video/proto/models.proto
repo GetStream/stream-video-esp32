@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package stream.video.sfu.models;
+
+enum TrackType {
+  TRACK_TYPE_UNSPECIFIED = 0;
+  TRACK_TYPE_AUDIO = 1;
+  TRACK_TYPE_VIDEO = 2;
+  TRACK_TYPE_SCREEN_SHARE = 3;
+  TRACK_TYPE_SCREEN_SHARE_AUDIO = 4;
+}
+
+enum VideoQuality {
+  VIDEO_QUALITY_LOW_UNSPECIFIED = 0;
+  VIDEO_QUALITY_MID = 1;
+  VIDEO_QUALITY_HIGH = 2;
+  VIDEO_QUALITY_OFF = 3;
+}
+
+message VideoDimension {
+  uint32 width = 1;
+  uint32 height = 2;
+}
+
+message VideoLayer {
+  string rid = 1;
+  VideoDimension video_dimension = 2;
+  uint32 bitrate = 4;
+  uint32 fps = 5;
+  VideoQuality quality = 6;
+}
+
+message AudioBitrate {
+  AudioBitrateProfile profile = 1;
+  int32 bitrate = 2;
+}
+
+enum AudioBitrateProfile {
+  AUDIO_BITRATE_PROFILE_VOICE_STANDARD_UNSPECIFIED = 0;
+  AUDIO_BITRATE_PROFILE_VOICE_HIGH_QUALITY = 1;
+  AUDIO_BITRATE_PROFILE_MUSIC_HIGH_QUALITY = 2;
+}
+
+message Codec {
+  uint32 payload_type = 16;
+  string name = 10;
+  uint32 clock_rate = 14;
+  string encoding_parameters = 15;
+  string fmtp = 12;
+}
+
+message PublishOption {
+  TrackType track_type = 1;
+  Codec codec = 2;
+  int32 bitrate = 3;
+  int32 fps = 4;
+  int32 max_spatial_layers = 5;
+  int32 max_temporal_layers = 6;
+  VideoDimension video_dimension = 7;
+  int32 id = 8;
+  bool use_single_layer = 9;
+  repeated AudioBitrate audio_bitrate_profiles = 10;
+}
+
+message TrackInfo {
+  string track_id = 1;
+  TrackType track_type = 2;
+  repeated VideoLayer layers = 5;
+  string mid = 6;
+  bool dtx = 7;
+  bool stereo = 8;
+  bool red = 9;
+  bool muted = 10;
+  Codec codec = 11;
+  int32 publish_option_id = 12;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_PUBLISH_TRACK_NOT_FOUND = 100;
+  ERROR_CODE_PUBLISH_TRACKS_MISMATCH = 101;
+  ERROR_CODE_PUBLISH_TRACK_OUT_OF_ORDER = 102;
+  ERROR_CODE_PUBLISH_TRACK_VIDEO_LAYER_NOT_FOUND = 103;
+  ERROR_CODE_LIVE_ENDED = 104;
+  ERROR_CODE_PARTICIPANT_NOT_FOUND = 200;
+  ERROR_CODE_PARTICIPANT_MIGRATING_OUT = 201;
+  ERROR_CODE_PARTICIPANT_MIGRATION_FAILED = 202;
+  ERROR_CODE_PARTICIPANT_MIGRATING = 203;
+  ERROR_CODE_PARTICIPANT_RECONNECT_FAILED = 204;
+  ERROR_CODE_PARTICIPANT_MEDIA_TRANSPORT_FAILURE = 205;
+  ERROR_CODE_PARTICIPANT_SIGNAL_LOST = 206;
+  ERROR_CODE_CALL_NOT_FOUND = 300;
+  ERROR_CODE_CALL_PARTICIPANT_LIMIT_REACHED = 301;
+  ERROR_CODE_REQUEST_VALIDATION_FAILED = 400;
+  ERROR_CODE_UNAUTHENTICATED = 401;
+  ERROR_CODE_PERMISSION_DENIED = 403;
+  ERROR_CODE_TOO_MANY_REQUESTS = 429;
+  ERROR_CODE_INTERNAL_SERVER_ERROR = 500;
+  ERROR_CODE_SFU_SHUTTING_DOWN = 600;
+  ERROR_CODE_SFU_FULL = 700;
+}
+
+message Error {
+  ErrorCode code = 1;
+  string message = 2;
+  bool should_retry = 3;
+}

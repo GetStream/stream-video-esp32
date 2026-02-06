@@ -156,13 +156,25 @@ static void capture_thread_scheduler(const char *name, esp_capture_thread_schedu
 #define STREAM_CAM_I2C_SCL 5
 #endif
 #ifndef STREAM_VIDEO_WIDTH
+#ifdef CONFIG_STREAM_VIDEO_WIDTH
+#define STREAM_VIDEO_WIDTH CONFIG_STREAM_VIDEO_WIDTH
+#else
 #define STREAM_VIDEO_WIDTH 160
 #endif
+#endif
 #ifndef STREAM_VIDEO_HEIGHT
+#ifdef CONFIG_STREAM_VIDEO_HEIGHT
+#define STREAM_VIDEO_HEIGHT CONFIG_STREAM_VIDEO_HEIGHT
+#else
 #define STREAM_VIDEO_HEIGHT 120
 #endif
+#endif
 #ifndef STREAM_VIDEO_FPS
+#ifdef CONFIG_STREAM_VIDEO_FPS
+#define STREAM_VIDEO_FPS CONFIG_STREAM_VIDEO_FPS
+#else
 #define STREAM_VIDEO_FPS 10
+#endif
 #endif
 
 #if !HAVE_CODEC_BOARD
@@ -301,6 +313,16 @@ esp_err_t media_publish_start(stream_video_client_handle_t client)
 
     ESP_LOGI(TAG, "Installing capture thread scheduler");
     esp_capture_set_thread_scheduler(capture_thread_scheduler);
+    ESP_LOGI(TAG, "Config: video=%ux%u@%u fmt=%s",
+             (unsigned)STREAM_VIDEO_WIDTH,
+             (unsigned)STREAM_VIDEO_HEIGHT,
+             (unsigned)STREAM_VIDEO_FPS,
+#if defined(CONFIG_STREAM_VIDEO_CAMERA_FMT_YUV420)
+             "YUV420"
+#else
+             "YUV422"
+#endif
+    );
 
     bool enable_audio = false;
     esp_capture_audio_src_if_t *audio_src = NULL;
@@ -342,6 +364,32 @@ esp_err_t media_publish_start(stream_video_client_handle_t client)
     if (!video_src) {
         ESP_LOGE(TAG, "Failed to create camera source");
         return ESP_FAIL;
+    }
+    esp_capture_video_info_t fixed_caps = {
+#if defined(CONFIG_STREAM_VIDEO_CAMERA_FMT_YUV420)
+        .format_id = ESP_CAPTURE_FMT_ID_YUV420,
+#else
+        .format_id = ESP_CAPTURE_FMT_ID_YUV422,
+#endif
+        .width = STREAM_VIDEO_WIDTH,
+        .height = STREAM_VIDEO_HEIGHT,
+        .fps = STREAM_VIDEO_FPS,
+    };
+    if (video_src->set_fixed_caps) {
+        esp_capture_err_t cap_err = video_src->set_fixed_caps(video_src, &fixed_caps);
+        if (cap_err != ESP_CAPTURE_ERR_OK) {
+            ESP_LOGW(TAG, "Failed to set camera fixed caps: err=%d", (int)cap_err);
+        } else {
+            const char *fmt_name =
+                (fixed_caps.format_id == ESP_CAPTURE_FMT_ID_YUV420) ? "YUV420" :
+                (fixed_caps.format_id == ESP_CAPTURE_FMT_ID_YUV422) ? "YUV422" :
+                "UNKNOWN";
+            ESP_LOGI(TAG, "Camera fixed caps set: %s %ux%u@%u",
+                     fmt_name,
+                     (unsigned)fixed_caps.width,
+                     (unsigned)fixed_caps.height,
+                     (unsigned)fixed_caps.fps);
+        }
     }
 
 #if HAVE_GMF_APP_SETUP && HAVE_CAPTURE_AUDIO_DEV
@@ -386,6 +434,13 @@ esp_err_t media_publish_start(stream_video_client_handle_t client)
         ESP_LOGE(TAG, "Failed to setup capture sink");
         return ESP_FAIL;
     }
+#ifdef CONFIG_STREAM_VIDEO_BITRATE
+    if (esp_capture_sink_set_bitrate(s_sink, ESP_CAPTURE_STREAM_TYPE_VIDEO, CONFIG_STREAM_VIDEO_BITRATE) == ESP_CAPTURE_ERR_OK) {
+        ESP_LOGI(TAG, "Video bitrate set to %u bps", (unsigned)CONFIG_STREAM_VIDEO_BITRATE);
+    } else {
+        ESP_LOGW(TAG, "Failed to set video bitrate to %u bps", (unsigned)CONFIG_STREAM_VIDEO_BITRATE);
+    }
+#endif
     esp_capture_sink_enable(s_sink, ESP_CAPTURE_RUN_MODE_ALWAYS);
 
     if (esp_capture_start(s_capture) != ESP_CAPTURE_ERR_OK) {
@@ -398,6 +453,9 @@ esp_err_t media_publish_start(stream_video_client_handle_t client)
         .publish_audio = enable_audio,
         .publish_video = true,
     };
+    ESP_LOGI(TAG, "media_publish_start: calling stream_video_start_publishing (sink=%p audio=%d video=1)",
+             (void *)s_sink,
+             enable_audio ? 1 : 0);
     stream_video_error_t err = stream_video_start_publishing(client, &params);
     if (err != STREAM_VIDEO_ERR_OK) {
         ESP_LOGE(TAG, "Failed to start publishing: %s (%d)",

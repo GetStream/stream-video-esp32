@@ -8,6 +8,7 @@ The proto files are located in `../stream-video/proto/`:
 
 - `signaling.proto` - Signaling messages (connect, join room, publish/subscribe tracks)
 - `sfu.proto` - SFU connection and WebRTC signaling messages (SDP, ICE candidates)
+- `models.proto` - Shared SFU model types (tracks, errors)
 
 ## Code Generation
 
@@ -28,7 +29,9 @@ protoc --plugin=protoc-gen-nanopb=<nanopb_path>/generator/protoc-gen-nanopb \
        --nanopb_out=generated \
        --proto_path=../stream-video/proto \
        ../stream-video/proto/signaling.proto \
-       ../stream-video/proto/sfu.proto
+       ../stream-video/proto/sfu.proto \
+       ../stream-video/proto/models.proto \
+       ../stream-video/proto/sfu_signal.proto
 ```
 
 ## Generated Files
@@ -36,6 +39,8 @@ protoc --plugin=protoc-gen-nanopb=<nanopb_path>/generator/protoc-gen-nanopb \
 Generated files will be placed in the `generated/` directory:
 - `signaling.pb.c` / `signaling.pb.h`
 - `sfu.pb.c` / `sfu.pb.h`
+- `sfu_signal.pb.c` / `sfu_signal.pb.h`
+- `models.pb.c` / `models.pb.h`
 
 ## Usage
 

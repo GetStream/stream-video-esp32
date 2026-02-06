@@ -13,6 +13,7 @@
 #include "esp_crt_bundle.h"
 #include "sfu.pb.h"
 #include "sfu_signal.pb.h"
+#include "models.pb.h"
 #include "pb_encode.h"
 #include "pb_decode.h"
 #include "esp_peer.h"
@@ -20,21 +21,41 @@
 #include "esp_http_client.h"
 #include "esp_capture_sink.h"
 #include "esp_capture_types.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 
 static const char *TAG = "stream_sfu";
 
+#define SFU_HTTP_BUFFER_SIZE 8192
+
 #define SFU_PEER_TASK_STACK_BYTES 16384
-#define SFU_PUB_TASK_STACK_BYTES 16384
+#define SFU_PUB_TASK_STACK_BYTES 24576
+
+#define SFU_MAX_PUBLISH_TRACK_IDS 4
 
 // Event bits for SFU WebSocket events
 #define SFU_CONNECTED_BIT    BIT0
 #define SFU_DISCONNECTED_BIT BIT1
 #define SFU_ERROR_BIT        BIT2
+
+typedef struct {
+    char mid[16];
+    char track_id[64];
+} sfu_track_id_entry_t;
+
+typedef struct {
+    stream_video_sfu_models_TrackType track_type;
+    int32_t id;
+    char codec_name[16];
+    uint32_t fps;
+    uint32_t width;
+    uint32_t height;
+} sfu_publish_option_t;
 
 /**
  * @brief SFU client structure
@@ -59,6 +80,10 @@ struct stream_sfu_client {
     bool publish_audio;
     bool publish_video;
     bool publish_running;
+    sfu_track_id_entry_t publish_track_ids[SFU_MAX_PUBLISH_TRACK_IDS];
+    size_t publish_track_id_count;
+    sfu_publish_option_t publish_options[SFU_MAX_PUBLISH_TRACK_IDS];
+    size_t publish_option_count;
     esp_peer_ice_server_cfg_t *ice_servers;
     size_t ice_server_count;
 };
@@ -100,6 +125,872 @@ static bool decode_string_cb(pb_istream_t *stream,
     dest->buffer[dest->length] = '\0';
     if (len > to_copy) {
         pb_read(stream, NULL, len - to_copy);
+    }
+    return true;
+}
+
+static stream_video_error_t sfu_send_ice_trickle_http(
+    stream_sfu_client_handle_t client,
+    stream_video_sfu_PeerType peer_type,
+    const char *candidate);
+
+static void sfu_send_trickle_from_sdp(stream_sfu_client_handle_t client, const char *sdp)
+{
+    if (!client || !sdp || !client->join_session_id[0]) {
+        return;
+    }
+    const char *cursor = sdp;
+    unsigned sent = 0;
+    while (*cursor) {
+        const char *line_end = strchr(cursor, '\n');
+        size_t line_len = line_end ? (size_t)(line_end - cursor) : strlen(cursor);
+        if (line_len > 0 && cursor[line_len - 1] == '\r') {
+            line_len--;
+        }
+        if (line_len > 12 && strncmp(cursor, "a=candidate:", 12) == 0) {
+            char candidate[256];
+            size_t copy_len = line_len - 2; // skip "a="
+            if (copy_len >= sizeof(candidate)) {
+                copy_len = sizeof(candidate) - 1;
+            }
+            memcpy(candidate, cursor + 2, copy_len);
+            candidate[copy_len] = '\0';
+            sfu_send_ice_trickle_http(
+                client,
+                stream_video_sfu_PeerType_PEER_TYPE_PUBLISHER_UNSPECIFIED,
+                candidate);
+            sent++;
+        }
+        if (!line_end) {
+            break;
+        }
+        cursor = line_end + 1;
+    }
+    if (sent > 0) {
+        ESP_LOGI(TAG, "Sent %u ICE candidates from SDP", sent);
+    } else {
+        ESP_LOGW(TAG, "No ICE candidates found in SDP for trickle");
+    }
+}
+
+static bool sfu_extract_candidate_from_json(const char *json, char *out, size_t out_size)
+{
+    if (!json || !out || out_size == 0) {
+        return false;
+    }
+    const char *key = "\"candidate\"";
+    const char *pos = strstr(json, key);
+    if (!pos) {
+        return false;
+    }
+    pos = strchr(pos + strlen(key), ':');
+    if (!pos) {
+        return false;
+    }
+    pos = strchr(pos, '"');
+    if (!pos) {
+        return false;
+    }
+    pos++;
+    size_t i = 0;
+    while (*pos && *pos != '"' && i + 1 < out_size) {
+        if (*pos == '\\' && pos[1]) {
+            pos++;
+        }
+        out[i++] = *pos++;
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
+typedef struct {
+    char track_id[64];
+    char mid[16];
+    stream_video_sfu_models_TrackType track_type;
+    bool muted;
+    int payload_type;
+    uint32_t clock_rate;
+    char codec_name[16];
+    char encoding_params[16];
+    char fmtp[128];
+    uint32_t video_width;
+    uint32_t video_height;
+    uint32_t video_fps;
+    uint32_t video_bitrate;
+    char video_rid[4];
+    int32_t publish_option_id;
+} sfu_track_info_t;
+
+typedef struct {
+    const sfu_track_info_t *tracks;
+    size_t count;
+} sfu_track_list_t;
+
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t fps;
+    uint32_t bitrate;
+    const char *rid;
+} sfu_video_layer_info_t;
+
+typedef struct {
+    sfu_publish_option_t *options;
+    size_t capacity;
+    size_t count;
+} sfu_publish_options_ctx_t;
+
+static void sfu_copy_token(char *dest, size_t dest_size, const char *start)
+{
+    if (!dest || dest_size == 0) {
+        return;
+    }
+    size_t len = 0;
+    while (start[len] && start[len] != ' ' && start[len] != '\r' && start[len] != '\n') {
+        ++len;
+    }
+    if (len >= dest_size) {
+        len = dest_size - 1;
+    }
+    memcpy(dest, start, len);
+    dest[len] = '\0';
+}
+
+static const char *sfu_track_type_to_str(stream_video_sfu_models_TrackType type)
+{
+    switch (type) {
+        case stream_video_sfu_models_TrackType_TRACK_TYPE_AUDIO:
+            return "TRACK_TYPE_AUDIO";
+        case stream_video_sfu_models_TrackType_TRACK_TYPE_VIDEO:
+            return "TRACK_TYPE_VIDEO";
+        case stream_video_sfu_models_TrackType_TRACK_TYPE_SCREEN_SHARE:
+            return "TRACK_TYPE_SCREEN_SHARE";
+        case stream_video_sfu_models_TrackType_TRACK_TYPE_SCREEN_SHARE_AUDIO:
+            return "TRACK_TYPE_SCREEN_SHARE_AUDIO";
+        default:
+            return "TRACK_TYPE_UNSPECIFIED";
+    }
+}
+
+static char *sfu_escape_json_string(const char *input)
+{
+    if (!input) {
+        return NULL;
+    }
+    size_t len = strlen(input);
+    size_t cap = len * 2 + 1;
+    char *out = (char *)malloc(cap);
+    if (!out) {
+        return NULL;
+    }
+    size_t pos = 0;
+    for (size_t i = 0; i < len; ++i) {
+        char ch = input[i];
+        const char *rep = NULL;
+        switch (ch) {
+            case '\\': rep = "\\\\"; break;
+            case '"': rep = "\\\""; break;
+            case '\n': rep = "\\n"; break;
+            case '\r': rep = "\\r"; break;
+            case '\t': rep = "\\t"; break;
+            default: break;
+        }
+        if (rep) {
+            size_t rep_len = strlen(rep);
+            if (pos + rep_len + 1 >= cap) {
+                cap *= 2;
+                char *tmp = (char *)realloc(out, cap);
+                if (!tmp) {
+                    free(out);
+                    return NULL;
+                }
+                out = tmp;
+            }
+            memcpy(out + pos, rep, rep_len);
+            pos += rep_len;
+        } else {
+            if (pos + 2 >= cap) {
+                cap *= 2;
+                char *tmp = (char *)realloc(out, cap);
+                if (!tmp) {
+                    free(out);
+                    return NULL;
+                }
+                out = tmp;
+            }
+            out[pos++] = ch;
+        }
+    }
+    out[pos] = '\0';
+    return out;
+}
+
+typedef struct {
+    char *buffer;
+    size_t length;
+    size_t capacity;
+} sfu_string_builder_t;
+
+static void sfu_builder_init(sfu_string_builder_t *builder)
+{
+    builder->buffer = NULL;
+    builder->length = 0;
+    builder->capacity = 0;
+}
+
+static bool sfu_builder_append(sfu_string_builder_t *builder, const char *text)
+{
+    if (!builder || !text) {
+        return false;
+    }
+    size_t add_len = strlen(text);
+    if (add_len == 0) {
+        return true;
+    }
+    size_t needed = builder->length + add_len + 1;
+    if (needed > builder->capacity) {
+        size_t new_cap = builder->capacity == 0 ? 256 : builder->capacity;
+        while (new_cap < needed) {
+            new_cap *= 2;
+        }
+        char *tmp = (char *)realloc(builder->buffer, new_cap);
+        if (!tmp) {
+            return false;
+        }
+        builder->buffer = tmp;
+        builder->capacity = new_cap;
+    }
+    memcpy(builder->buffer + builder->length, text, add_len);
+    builder->length += add_len;
+    builder->buffer[builder->length] = '\0';
+    return true;
+}
+
+static void sfu_builder_reset(sfu_string_builder_t *builder)
+{
+    if (!builder) {
+        return;
+    }
+    free(builder->buffer);
+    builder->buffer = NULL;
+    builder->length = 0;
+    builder->capacity = 0;
+}
+
+static void sfu_append_filtered_video_section(sfu_string_builder_t *out, const char *section)
+{
+    if (!out || !section) {
+        return;
+    }
+
+    int preferred_pt = -1;
+    char line[512];
+    const char *cursor = section;
+    while (*cursor) {
+        size_t len = 0;
+        while (*cursor && *cursor != '\n' && len + 1 < sizeof(line)) {
+            line[len++] = *cursor++;
+        }
+        if (*cursor == '\n') {
+            cursor++;
+        }
+        if (len > 0 && line[len - 1] == '\r') {
+            line[len - 1] = '\0';
+        } else {
+            line[len] = '\0';
+        }
+
+        if (strncmp(line, "a=fmtp:", 7) == 0 && strstr(line, "packetization-mode=1")) {
+            int pt = -1;
+            if (sscanf(line, "a=fmtp:%d", &pt) == 1) {
+                preferred_pt = pt;
+                break;
+            }
+        }
+        if (strncmp(line, "a=rtpmap:", 9) == 0 && strstr(line, "H264/")) {
+            int pt = -1;
+            if (sscanf(line, "a=rtpmap:%d", &pt) == 1 && preferred_pt < 0) {
+                preferred_pt = pt;
+            }
+        }
+    }
+
+    cursor = section;
+    while (*cursor) {
+        size_t len = 0;
+        while (*cursor && *cursor != '\n' && len + 1 < sizeof(line)) {
+            line[len++] = *cursor++;
+        }
+        if (*cursor == '\n') {
+            cursor++;
+        }
+        if (len > 0 && line[len - 1] == '\r') {
+            line[len - 1] = '\0';
+        } else {
+            line[len] = '\0';
+        }
+
+        if (strncmp(line, "m=video", 7) == 0) {
+            if (preferred_pt > 0) {
+                char mline[64];
+                snprintf(mline, sizeof(mline), "m=video 9 UDP/TLS/RTP/SAVPF %d\r\n", preferred_pt);
+                sfu_builder_append(out, mline);
+            } else {
+                sfu_builder_append(out, line);
+                sfu_builder_append(out, "\r\n");
+            }
+            continue;
+        }
+
+        if ((strncmp(line, "a=rtpmap:", 9) == 0) ||
+            (strncmp(line, "a=fmtp:", 7) == 0) ||
+            (strncmp(line, "a=rtcp-fb:", 10) == 0)) {
+            int pt = -1;
+            if (sscanf(line, "a=rtpmap:%d", &pt) != 1 &&
+                sscanf(line, "a=fmtp:%d", &pt) != 1 &&
+                sscanf(line, "a=rtcp-fb:%d", &pt) != 1) {
+                continue;
+            }
+            if (preferred_pt > 0 && pt != preferred_pt) {
+                continue;
+            }
+        }
+
+        sfu_builder_append(out, line);
+        sfu_builder_append(out, "\r\n");
+    }
+}
+
+static char *sfu_filter_sdp(const char *sdp, bool include_audio, size_t *out_len)
+{
+    if (!sdp) {
+        return NULL;
+    }
+
+    sfu_string_builder_t session_builder;
+    sfu_string_builder_t section_builder;
+    sfu_string_builder_t section_out;
+    sfu_builder_init(&session_builder);
+    sfu_builder_init(&section_builder);
+    sfu_builder_init(&section_out);
+
+    char mids[4][16] = {{0}};
+    size_t mid_count = 0;
+    bool in_section = false;
+    bool keep_section = false;
+    int current_mid_index = -1;
+    bool current_is_video = false;
+    char line[512];
+    const char *cursor = sdp;
+    while (*cursor) {
+        size_t len = 0;
+        while (*cursor && *cursor != '\n' && len + 1 < sizeof(line)) {
+            line[len++] = *cursor++;
+        }
+        if (*cursor == '\n') {
+            cursor++;
+        }
+        if (len > 0 && line[len - 1] == '\r') {
+            line[len - 1] = '\0';
+        } else {
+            line[len] = '\0';
+        }
+
+        if (strncmp(line, "m=", 2) == 0) {
+            if (in_section && keep_section && section_builder.buffer) {
+                if (current_is_video) {
+                    sfu_append_filtered_video_section(&section_out, section_builder.buffer);
+                } else {
+                    sfu_builder_append(&section_out, section_builder.buffer);
+                }
+                sfu_builder_reset(&section_builder);
+            }
+            in_section = true;
+            keep_section = false;
+            current_mid_index = -1;
+            current_is_video = false;
+            if (strncmp(line + 2, "video", 5) == 0) {
+                keep_section = true;
+                current_is_video = true;
+            } else if (strncmp(line + 2, "audio", 5) == 0 && include_audio) {
+                keep_section = true;
+                current_is_video = false;
+            }
+            if (keep_section) {
+                sfu_builder_append(&section_builder, line);
+                sfu_builder_append(&section_builder, "\r\n");
+            }
+            continue;
+        }
+
+        if (!in_section) {
+            if (strncmp(line, "a=group:BUNDLE", 14) == 0) {
+                continue;
+            }
+            sfu_builder_append(&session_builder, line);
+            sfu_builder_append(&session_builder, "\r\n");
+            continue;
+        }
+
+        if (keep_section) {
+            if (strcmp(line, "a=sendrecv") == 0) {
+                sfu_builder_append(&section_builder, "a=sendonly\r\n");
+                continue;
+            }
+            if (strncmp(line, "a=mid:", 6) == 0) {
+                if (current_mid_index < 0 && mid_count < 4) {
+                    current_mid_index = (int)mid_count;
+                    snprintf(mids[mid_count], sizeof(mids[mid_count]), "%u", (unsigned)mid_count);
+                    mid_count++;
+                }
+                if (current_mid_index >= 0) {
+                    char mid_line[32];
+                    snprintf(mid_line, sizeof(mid_line), "a=mid:%d", current_mid_index);
+                    sfu_builder_append(&section_builder, mid_line);
+                    sfu_builder_append(&section_builder, "\r\n");
+                } else {
+                    sfu_builder_append(&section_builder, line);
+                    sfu_builder_append(&section_builder, "\r\n");
+                }
+                continue;
+            }
+            sfu_builder_append(&section_builder, line);
+            sfu_builder_append(&section_builder, "\r\n");
+        }
+    }
+
+    if (in_section && keep_section && section_builder.buffer) {
+        if (current_is_video) {
+            sfu_append_filtered_video_section(&section_out, section_builder.buffer);
+        } else {
+            sfu_builder_append(&section_out, section_builder.buffer);
+        }
+    }
+
+    sfu_string_builder_t out_builder;
+    sfu_builder_init(&out_builder);
+    sfu_builder_append(&out_builder, session_builder.buffer ? session_builder.buffer : "");
+    if (mid_count > 0) {
+        sfu_builder_append(&out_builder, "a=group:BUNDLE");
+        for (size_t i = 0; i < mid_count; ++i) {
+            sfu_builder_append(&out_builder, " ");
+            sfu_builder_append(&out_builder, mids[i]);
+        }
+        sfu_builder_append(&out_builder, "\r\n");
+    }
+    sfu_builder_append(&out_builder, section_out.buffer ? section_out.buffer : "");
+
+    free(session_builder.buffer);
+    free(section_builder.buffer);
+    free(section_out.buffer);
+    if (out_len) {
+        *out_len = out_builder.length;
+    }
+    return out_builder.buffer;
+}
+static void sfu_track_info_reset(sfu_track_info_t *info)
+{
+    if (!info) {
+        return;
+    }
+    memset(info, 0, sizeof(*info));
+    info->track_type = stream_video_sfu_models_TrackType_TRACK_TYPE_UNSPECIFIED;
+    info->muted = false;
+    info->payload_type = -1;
+    info->video_bitrate = 0;
+    info->publish_option_id = 0;
+}
+
+static bool sfu_parse_sdp_tracks(const char *sdp,
+                                 sfu_track_info_t *tracks,
+                                 size_t max_tracks,
+                                 size_t *track_count)
+{
+    if (!sdp || !tracks || !track_count || max_tracks == 0) {
+        return false;
+    }
+
+    size_t count = 0;
+    bool in_section = false;
+    bool sending = false;
+    int section_payload = -1;
+    int h264_pt = -1;
+    char h264_fmtp[128] = {0};
+    bool h264_fmtp_set = false;
+    sfu_track_info_t current;
+    sfu_track_info_reset(&current);
+
+    const char *cursor = sdp;
+    while (*cursor) {
+        char line[256] = {0};
+        size_t len = 0;
+        while (*cursor && *cursor != '\n' && len + 1 < sizeof(line)) {
+            line[len++] = *cursor++;
+        }
+        if (*cursor == '\n') {
+            cursor++;
+        }
+        if (len > 0 && line[len - 1] == '\r') {
+            line[len - 1] = '\0';
+        }
+
+        if (strncmp(line, "m=", 2) == 0) {
+            if (in_section && sending && current.mid[0] && count < max_tracks) {
+                tracks[count++] = current;
+            }
+            sfu_track_info_reset(&current);
+            in_section = true;
+            sending = false;
+            section_payload = -1;
+            if (strncmp(line + 2, "video", 5) == 0) {
+                current.track_type = stream_video_sfu_models_TrackType_TRACK_TYPE_VIDEO;
+            } else if (strncmp(line + 2, "audio", 5) == 0) {
+                current.track_type = stream_video_sfu_models_TrackType_TRACK_TYPE_AUDIO;
+            }
+            h264_pt = -1;
+            h264_fmtp[0] = '\0';
+            h264_fmtp_set = false;
+            const char *payload = line + 2;
+            int token_index = 0;
+            while (*payload) {
+                while (*payload == ' ') {
+                    ++payload;
+                }
+                if (!*payload) {
+                    break;
+                }
+                const char *token_end = strchr(payload, ' ');
+                size_t token_len = token_end ? (size_t)(token_end - payload) : strlen(payload);
+                if (token_index >= 3) {
+                    char tmp[8] = {0};
+                    size_t copy_len = token_len < (sizeof(tmp) - 1) ? token_len : (sizeof(tmp) - 1);
+                    memcpy(tmp, payload, copy_len);
+                    section_payload = atoi(tmp);
+                    current.payload_type = section_payload;
+                    break;
+                }
+                token_index++;
+                payload += token_len;
+            }
+            continue;
+        }
+
+        if (!in_section) {
+            continue;
+        }
+
+        if (strncmp(line, "a=mid:", 6) == 0) {
+            sfu_copy_token(current.mid, sizeof(current.mid), line + 6);
+        } else if (strncmp(line, "a=msid:", 7) == 0) {
+            const char *value = line + 7;
+            while (*value == ' ') {
+                ++value;
+            }
+            const char *space = strchr(value, ' ');
+            if (space) {
+                const char *track = space + 1;
+                while (*track == ' ') {
+                    ++track;
+                }
+                sfu_copy_token(current.track_id, sizeof(current.track_id), track);
+            }
+        } else if (strncmp(line, "a=rtpmap:", 9) == 0) {
+            int pt = -1;
+            char name[16] = {0};
+            int clock = 0;
+            char enc[16] = {0};
+            int parsed = sscanf(line, "a=rtpmap:%d %15[^/]/%d/%15s", &pt, name, &clock, enc);
+            if (parsed >= 3 && pt == section_payload) {
+                strncpy(current.codec_name, name, sizeof(current.codec_name) - 1);
+                current.clock_rate = (uint32_t)clock;
+                if (parsed == 4) {
+                    strncpy(current.encoding_params, enc, sizeof(current.encoding_params) - 1);
+                }
+            }
+            if (parsed >= 3 && strcasecmp(name, "H264") == 0) {
+                h264_pt = pt;
+            }
+        } else if (strncmp(line, "a=fmtp:", 7) == 0) {
+            int pt = -1;
+            const char *params = strchr(line, ' ');
+            if (sscanf(line, "a=fmtp:%d", &pt) == 1 && pt == section_payload && params) {
+                while (*params == ' ') {
+                    ++params;
+                }
+                strncpy(current.fmtp, params, sizeof(current.fmtp) - 1);
+            }
+            if (h264_pt >= 0 && pt == h264_pt && params) {
+                while (*params == ' ') {
+                    ++params;
+                }
+                if (!h264_fmtp_set || strstr(params, "packetization-mode=1")) {
+                    strncpy(h264_fmtp, params, sizeof(h264_fmtp) - 1);
+                    h264_fmtp_set = true;
+                }
+            }
+        } else if (strncmp(line, "a=framesize:", 12) == 0) {
+            int pt = -1;
+            const char *params = strchr(line, ' ');
+            if (sscanf(line, "a=framesize:%d", &pt) == 1 && pt == section_payload && params) {
+                while (*params == ' ') {
+                    ++params;
+                }
+                unsigned int w = 0;
+                unsigned int h = 0;
+                if (sscanf(params, "%ux%u", &w, &h) == 2 || sscanf(params, "%u-%u", &w, &h) == 2) {
+                    current.video_width = (uint32_t)w;
+                    current.video_height = (uint32_t)h;
+                }
+            }
+        } else if (strncmp(line, "a=framerate:", 12) == 0) {
+            const char *value = line + 12;
+            while (*value == ' ') {
+                ++value;
+            }
+            current.video_fps = (uint32_t)atoi(value);
+        } else if (strcmp(line, "a=sendrecv") == 0 || strcmp(line, "a=sendonly") == 0) {
+            sending = true;
+        } else if (strcmp(line, "a=recvonly") == 0 || strcmp(line, "a=inactive") == 0) {
+            sending = false;
+        }
+    }
+
+    if (in_section && sending && current.mid[0] && count < max_tracks) {
+        if (current.track_type == stream_video_sfu_models_TrackType_TRACK_TYPE_VIDEO &&
+            h264_fmtp_set) {
+            strncpy(current.codec_name, "H264", sizeof(current.codec_name) - 1);
+            strncpy(current.fmtp, h264_fmtp, sizeof(current.fmtp) - 1);
+            current.payload_type = h264_pt;
+        }
+        tracks[count++] = current;
+    }
+
+    *track_count = count;
+    return count > 0;
+}
+
+static void sfu_fill_uuid(char *buffer, size_t capacity)
+{
+    if (!buffer || capacity < 37) {
+        if (buffer && capacity) {
+            buffer[0] = '\0';
+        }
+        return;
+    }
+    uint8_t bytes[16];
+    for (size_t i = 0; i < sizeof(bytes); ++i) {
+        bytes[i] = (uint8_t)(esp_random() & 0xFF);
+    }
+    bytes[6] = (uint8_t)((bytes[6] & 0x0F) | 0x40);
+    bytes[8] = (uint8_t)((bytes[8] & 0x3F) | 0x80);
+    snprintf(buffer, capacity,
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             bytes[0], bytes[1], bytes[2], bytes[3],
+             bytes[4], bytes[5],
+             bytes[6], bytes[7],
+             bytes[8], bytes[9],
+             bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+}
+
+static void sfu_reset_publish_track_ids(stream_sfu_client_handle_t client)
+{
+    if (!client) {
+        return;
+    }
+    memset(client->publish_track_ids, 0, sizeof(client->publish_track_ids));
+    client->publish_track_id_count = 0;
+}
+
+static void sfu_reset_publish_options(stream_sfu_client_handle_t client)
+{
+    if (!client) {
+        return;
+    }
+    memset(client->publish_options, 0, sizeof(client->publish_options));
+    client->publish_option_count = 0;
+}
+
+static void sfu_assign_track_id(stream_sfu_client_handle_t client, sfu_track_info_t *track)
+{
+    if (!track) {
+        return;
+    }
+    if (!track->track_id[0]) {
+        sfu_fill_uuid(track->track_id, sizeof(track->track_id));
+        return;
+    }
+    return;
+
+}
+
+static const sfu_publish_option_t *sfu_find_publish_option(
+    stream_sfu_client_handle_t client,
+    stream_video_sfu_models_TrackType track_type,
+    const char *codec_name)
+{
+    if (!client) {
+        return NULL;
+    }
+    for (size_t i = 0; i < client->publish_option_count; ++i) {
+        if (client->publish_options[i].track_type != track_type) {
+            continue;
+        }
+        if (codec_name && codec_name[0] && client->publish_options[i].codec_name[0]) {
+            if (strcasecmp(client->publish_options[i].codec_name, codec_name) != 0) {
+                continue;
+            }
+        }
+        return &client->publish_options[i];
+    }
+    return NULL;
+}
+
+static bool decode_publish_options_cb(pb_istream_t *stream,
+                                      const pb_field_t *field,
+                                      void **arg)
+{
+    (void)field;
+    sfu_publish_options_ctx_t *ctx = (sfu_publish_options_ctx_t *)(*arg);
+    if (!ctx || !ctx->options || ctx->capacity == 0) {
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Publish option bytes: %u", (unsigned)stream->bytes_left);
+    stream_video_sfu_models_PublishOption option = stream_video_sfu_models_PublishOption_init_zero;
+    char codec_buf[32] = {0};
+    char codec_fmtp[64] = {0};
+    char codec_params[32] = {0};
+    sfu_string_buffer_t codec_ctx = { .buffer = codec_buf, .capacity = sizeof(codec_buf) };
+    sfu_string_buffer_t fmtp_ctx = { .buffer = codec_fmtp, .capacity = sizeof(codec_fmtp) };
+    sfu_string_buffer_t params_ctx = { .buffer = codec_params, .capacity = sizeof(codec_params) };
+    option.codec.name.funcs.decode = decode_string_cb;
+    option.codec.name.arg = &codec_ctx;
+    option.codec.fmtp.funcs.decode = decode_string_cb;
+    option.codec.fmtp.arg = &fmtp_ctx;
+    option.codec.encoding_parameters.funcs.decode = decode_string_cb;
+    option.codec.encoding_parameters.arg = &params_ctx;
+
+    if (!pb_decode(stream, stream_video_sfu_models_PublishOption_fields, &option)) {
+        ESP_LOGW(TAG, "Failed to decode publish option: %s", PB_GET_ERROR(stream));
+        return false;
+    }
+
+    if (ctx->count >= ctx->capacity) {
+        return true;
+    }
+
+    sfu_publish_option_t *dest = &ctx->options[ctx->count++];
+    dest->track_type = option.track_type;
+    dest->id = option.id;
+    dest->fps = (uint32_t)option.fps;
+    dest->width = option.video_dimension.width;
+    dest->height = option.video_dimension.height;
+    if (codec_buf[0]) {
+        strncpy(dest->codec_name, codec_buf, sizeof(dest->codec_name) - 1);
+    }
+    ESP_LOGI(TAG, "Decoded publish option: id=%d type=%d codec=%s %ux%u@%u fmtp=%s",
+             (int)dest->id,
+             (int)dest->track_type,
+             dest->codec_name[0] ? dest->codec_name : "(none)",
+             (unsigned)dest->width,
+             (unsigned)dest->height,
+             (unsigned)dest->fps,
+             codec_fmtp[0] ? codec_fmtp : "(none)");
+    return true;
+}
+
+static bool encode_layers_cb(pb_ostream_t *stream,
+                             const pb_field_t *field,
+                             void * const *arg)
+{
+    const sfu_video_layer_info_t *layer_info = (const sfu_video_layer_info_t *)(*arg);
+    if (!layer_info || layer_info->width == 0 || layer_info->height == 0) {
+        return true;
+    }
+
+    stream_video_sfu_models_VideoDimension dimension = stream_video_sfu_models_VideoDimension_init_zero;
+    dimension.width = layer_info->width;
+    dimension.height = layer_info->height;
+
+    stream_video_sfu_models_VideoLayer layer = stream_video_sfu_models_VideoLayer_init_zero;
+    if (layer_info->rid && layer_info->rid[0]) {
+        layer.rid.funcs.encode = encode_string_cb;
+        layer.rid.arg = (void *)layer_info->rid;
+    }
+    layer.has_video_dimension = true;
+    layer.video_dimension = dimension;
+    layer.fps = layer_info->fps;
+    layer.bitrate = layer_info->bitrate;
+    layer.quality = stream_video_sfu_models_VideoQuality_VIDEO_QUALITY_HIGH;
+
+    if (!pb_encode_tag_for_field(stream, field)) {
+        return false;
+    }
+    return pb_encode_submessage(stream, stream_video_sfu_models_VideoLayer_fields, &layer);
+}
+
+static bool encode_tracks_cb(pb_ostream_t *stream,
+                             const pb_field_t *field,
+                             void * const *arg)
+{
+    const sfu_track_list_t *list = (const sfu_track_list_t *)(*arg);
+    if (!list || !list->tracks) {
+        return true;
+    }
+    for (size_t i = 0; i < list->count; ++i) {
+        stream_video_sfu_models_TrackInfo track = stream_video_sfu_models_TrackInfo_init_zero;
+        track.track_id.funcs.encode = encode_string_cb;
+        track.track_id.arg = (void *)list->tracks[i].track_id;
+        track.track_type = list->tracks[i].track_type;
+        track.mid.funcs.encode = encode_string_cb;
+        track.mid.arg = (void *)list->tracks[i].mid;
+        track.muted = list->tracks[i].muted;
+        track.stereo = false;
+        track.publish_option_id = list->tracks[i].publish_option_id;
+
+        stream_video_sfu_models_Codec codec = stream_video_sfu_models_Codec_init_zero;
+        if (list->tracks[i].payload_type >= 0) {
+            codec.payload_type = (uint32_t)list->tracks[i].payload_type;
+        }
+        if (list->tracks[i].codec_name[0]) {
+            codec.name.funcs.encode = encode_string_cb;
+            codec.name.arg = (void *)list->tracks[i].codec_name;
+        }
+        if (list->tracks[i].clock_rate > 0) {
+            codec.clock_rate = list->tracks[i].clock_rate;
+        }
+        if (list->tracks[i].encoding_params[0]) {
+            codec.encoding_parameters.funcs.encode = encode_string_cb;
+            codec.encoding_parameters.arg = (void *)list->tracks[i].encoding_params;
+        }
+        if (list->tracks[i].fmtp[0]) {
+            codec.fmtp.funcs.encode = encode_string_cb;
+            codec.fmtp.arg = (void *)list->tracks[i].fmtp;
+        }
+        if (list->tracks[i].codec_name[0] || list->tracks[i].fmtp[0]) {
+            track.has_codec = true;
+        }
+        track.codec = codec;
+
+        sfu_video_layer_info_t layer_info = {
+            .width = list->tracks[i].video_width,
+            .height = list->tracks[i].video_height,
+            .fps = list->tracks[i].video_fps,
+            .bitrate = list->tracks[i].video_bitrate,
+            .rid = list->tracks[i].video_rid,
+        };
+        if (track.track_type == stream_video_sfu_models_TrackType_TRACK_TYPE_VIDEO &&
+            layer_info.width > 0 && layer_info.height > 0) {
+            track.layers.funcs.encode = encode_layers_cb;
+            track.layers.arg = &layer_info;
+        }
+
+        if (!pb_encode_tag_for_field(stream, field)) {
+            return false;
+        }
+        if (!pb_encode_submessage(stream, stream_video_sfu_models_TrackInfo_fields, &track)) {
+            return false;
+        }
     }
     return true;
 }
@@ -184,6 +1075,8 @@ static stream_video_error_t sfu_send_signal_request(
         .url = url,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 15000,
+        .buffer_size = SFU_HTTP_BUFFER_SIZE,
+        .buffer_size_tx = SFU_HTTP_BUFFER_SIZE,
     };
     esp_http_client_handle_t http = esp_http_client_init(&config);
     if (!http) {
@@ -236,6 +1129,8 @@ static stream_video_error_t sfu_send_signal_request_with_response(
         .url = url,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 15000,
+        .buffer_size = SFU_HTTP_BUFFER_SIZE,
+        .buffer_size_tx = SFU_HTTP_BUFFER_SIZE,
     };
     esp_http_client_handle_t http = esp_http_client_init(&config);
     if (!http) {
@@ -317,15 +1212,169 @@ static stream_video_error_t sfu_send_set_publisher_http(
     }
 
     uint8_t buffer[4096];
+    size_t filtered_len = 0;
+    char *filtered_sdp = sfu_filter_sdp(sdp, client->publish_audio, &filtered_len);
+    if (!filtered_sdp) {
+        return STREAM_VIDEO_ERR_FAIL;
+    }
+
     stream_video_sfu_signal_SetPublisherRequest request =
         stream_video_sfu_signal_SetPublisherRequest_init_zero;
     request.sdp.funcs.encode = encode_string_cb;
-    request.sdp.arg = (void *)sdp;
+    request.sdp.arg = (void *)filtered_sdp;
     request.session_id.funcs.encode = encode_string_cb;
     request.session_id.arg = (void *)client->join_session_id;
 
+    sfu_track_info_t track_infos[2];
+    size_t track_count = 0;
+    bool parsed = sfu_parse_sdp_tracks(filtered_sdp, track_infos, 2, &track_count);
+    if (!parsed || track_count == 0) {
+        if (client->publish_video) {
+            sfu_track_info_t fallback;
+            sfu_track_info_reset(&fallback);
+            fallback.track_type = stream_video_sfu_models_TrackType_TRACK_TYPE_VIDEO;
+            strncpy(fallback.mid, "0", sizeof(fallback.mid) - 1);
+            track_infos[0] = fallback;
+            track_count = 1;
+            ESP_LOGW(TAG, "Failed to parse SDP tracks, using fallback mid");
+        } else {
+            free(filtered_sdp);
+            ESP_LOGE(TAG, "No publishable tracks found in SDP");
+            return STREAM_VIDEO_ERR_FAIL;
+        }
+    }
+
+    for (size_t i = 0; i < track_count; ++i) {
+        sfu_assign_track_id(client, &track_infos[i]);
+        if (track_infos[i].track_type == stream_video_sfu_models_TrackType_TRACK_TYPE_AUDIO) {
+            track_infos[i].muted = !client->publish_audio;
+        } else if (track_infos[i].track_type == stream_video_sfu_models_TrackType_TRACK_TYPE_VIDEO) {
+            track_infos[i].muted = !client->publish_video;
+        }
+
+        const sfu_publish_option_t *opt = sfu_find_publish_option(
+            client,
+            track_infos[i].track_type,
+            track_infos[i].codec_name);
+        if (opt) {
+            track_infos[i].publish_option_id = opt->id;
+            if (!track_infos[i].codec_name[0] && opt->codec_name[0]) {
+                strncpy(track_infos[i].codec_name, opt->codec_name, sizeof(track_infos[i].codec_name) - 1);
+            }
+            if (track_infos[i].video_width == 0 && opt->width) {
+                track_infos[i].video_width = opt->width;
+            }
+            if (track_infos[i].video_height == 0 && opt->height) {
+                track_infos[i].video_height = opt->height;
+            }
+            if (track_infos[i].video_fps == 0 && opt->fps) {
+                track_infos[i].video_fps = opt->fps;
+            }
+        }
+
+        if (track_infos[i].track_type == stream_video_sfu_models_TrackType_TRACK_TYPE_VIDEO) {
+            if (!track_infos[i].video_rid[0]) {
+                strncpy(track_infos[i].video_rid, "f", sizeof(track_infos[i].video_rid) - 1);
+            }
+            if (track_infos[i].video_width == 0) {
+#ifdef CONFIG_STREAM_VIDEO_WIDTH
+                track_infos[i].video_width = CONFIG_STREAM_VIDEO_WIDTH;
+#else
+                track_infos[i].video_width = 160;
+#endif
+            }
+            if (track_infos[i].video_height == 0) {
+#ifdef CONFIG_STREAM_VIDEO_HEIGHT
+                track_infos[i].video_height = CONFIG_STREAM_VIDEO_HEIGHT;
+#else
+                track_infos[i].video_height = 120;
+#endif
+            }
+            if (track_infos[i].video_fps == 0) {
+#ifdef CONFIG_STREAM_VIDEO_FPS
+                track_infos[i].video_fps = CONFIG_STREAM_VIDEO_FPS;
+#else
+                track_infos[i].video_fps = 10;
+#endif
+            }
+            if (track_infos[i].video_bitrate == 0) {
+#ifdef CONFIG_STREAM_VIDEO_BITRATE
+                track_infos[i].video_bitrate = CONFIG_STREAM_VIDEO_BITRATE;
+#else
+                track_infos[i].video_bitrate = 150000;
+#endif
+            }
+        }
+    }
+
+    sfu_track_list_t track_list = {
+        .tracks = track_infos,
+        .count = track_count,
+    };
+    request.tracks.funcs.encode = encode_tracks_cb;
+    request.tracks.arg = &track_list;
+
+    char *escaped_sdp = sfu_escape_json_string(filtered_sdp);
+    if (escaped_sdp) {
+        size_t json_cap = strlen(escaped_sdp) + 1024 + track_count * 256;
+        char *json = (char *)malloc(json_cap);
+        if (json) {
+            size_t pos = 0;
+            pos += snprintf(json + pos, json_cap - pos,
+                            "{\"sdp\":\"%s\",\"session_id\":\"%s\",\"tracks\":[",
+                            escaped_sdp,
+                            client->join_session_id);
+            for (size_t i = 0; i < track_count; ++i) {
+                const sfu_track_info_t *t = &track_infos[i];
+                if (i > 0) {
+                    pos += snprintf(json + pos, json_cap - pos, ",");
+                }
+                pos += snprintf(json + pos, json_cap - pos,
+                                "{\"track_id\":\"%s\",\"track_type\":\"%s\",\"mid\":\"%s\","
+                                "\"muted\":%s,\"codec\":{\"name\":\"%s\",\"fmtp\":\"%s\"},"
+                                "\"layers\":[{\"rid\":\"%s\",\"video_dimension\":{\"width\":%u,\"height\":%u},"
+                                "\"bitrate\":%u,\"fps\":%u}]}",
+                                t->track_id,
+                                sfu_track_type_to_str(t->track_type),
+                                t->mid,
+                                t->muted ? "true" : "false",
+                                t->codec_name,
+                                t->fmtp,
+                                t->video_rid[0] ? t->video_rid : "",
+                                (unsigned)t->video_width,
+                                (unsigned)t->video_height,
+                                (unsigned)t->video_bitrate,
+                                (unsigned)t->video_fps);
+            }
+            snprintf(json + pos, json_cap - pos, "]}");
+            ESP_LOGI(TAG, "SetPublisher request JSON: %s", json);
+            free(json);
+        }
+        free(escaped_sdp);
+    }
+
+    ESP_LOGI(TAG, "SetPublisher request: session_id=%s tracks=%u",
+             client->join_session_id, (unsigned)track_count);
+    for (size_t i = 0; i < track_count; ++i) {
+        ESP_LOGI(TAG, "SetPublisher track[%u]: id=%s mid=%s type=%d muted=%d codec=%s pt=%d fps=%u option_id=%d size=%ux%u rid=%s bitrate=%u",
+                 (unsigned)i,
+                 track_infos[i].track_id[0] ? track_infos[i].track_id : "(empty)",
+                 track_infos[i].mid[0] ? track_infos[i].mid : "(empty)",
+                 (int)track_infos[i].track_type,
+                 (int)track_infos[i].muted,
+                 track_infos[i].codec_name[0] ? track_infos[i].codec_name : "(none)",
+                 track_infos[i].payload_type,
+                 (unsigned)track_infos[i].video_fps,
+                 (int)track_infos[i].publish_option_id,
+                 (unsigned)track_infos[i].video_width,
+                 (unsigned)track_infos[i].video_height,
+                 track_infos[i].video_rid[0] ? track_infos[i].video_rid : "(none)",
+                 (unsigned)track_infos[i].video_bitrate);
+    }
+
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
     if (!pb_encode(&stream, stream_video_sfu_signal_SetPublisherRequest_fields, &request)) {
+        free(filtered_sdp);
         ESP_LOGE(TAG, "Failed to encode SetPublisherRequest");
         return STREAM_VIDEO_ERR_FAIL;
     }
@@ -340,6 +1389,7 @@ static stream_video_error_t sfu_send_set_publisher_http(
         &resp,
         &resp_len);
     if (err != STREAM_VIDEO_ERR_OK) {
+        free(filtered_sdp);
         return err;
     }
 
@@ -355,8 +1405,8 @@ static stream_video_error_t sfu_send_set_publisher_http(
     response.sdp.arg = &answer_ctx;
     response.session_id.funcs.decode = decode_string_cb;
     response.session_id.arg = &session_ctx;
-    response.error_message.funcs.decode = decode_string_cb;
-    response.error_message.arg = &error_ctx;
+    response.error.message.funcs.decode = decode_string_cb;
+    response.error.message.arg = &error_ctx;
 
     pb_istream_t istream = pb_istream_from_buffer(resp, resp_len);
     if (!pb_decode(&istream, stream_video_sfu_signal_SetPublisherResponse_fields, &response)) {
@@ -370,6 +1420,36 @@ static stream_video_error_t sfu_send_set_publisher_http(
         ESP_LOGE(TAG, "SetPublisher error: %s", error_buf);
         return STREAM_VIDEO_ERR_FAIL;
     }
+    if (response.error.code != stream_video_sfu_models_ErrorCode_ERROR_CODE_UNSPECIFIED) {
+        ESP_LOGE(TAG, "SetPublisher error code: %d", response.error.code);
+        return STREAM_VIDEO_ERR_FAIL;
+    }
+
+    char *escaped_answer = sfu_escape_json_string(answer_buf);
+    char *escaped_session = sfu_escape_json_string(session_buf);
+    char *escaped_error = sfu_escape_json_string(error_buf);
+    if (escaped_answer && escaped_session && escaped_error) {
+        ESP_LOGI(TAG,
+                 "SetPublisher response JSON: {\"sdp\":\"%s\",\"session_id\":\"%s\",\"ice_restart\":%s,\"error\":%s}",
+                 escaped_answer,
+                 escaped_session,
+                 response.ice_restart ? "true" : "false",
+                 error_buf[0] ? "\"Invalid SetPublisher request\"" : "null");
+    }
+    if (escaped_answer) {
+        free(escaped_answer);
+    }
+    if (escaped_session) {
+        free(escaped_session);
+    }
+    if (escaped_error) {
+        free(escaped_error);
+    }
+
+    ESP_LOGI(TAG, "SetPublisher response: sdp_len=%u session_id=%s ice_restart=%d",
+             (unsigned)answer_ctx.length,
+             session_buf[0] ? session_buf : "(empty)",
+             (int)response.ice_restart);
 
     if (answer_buf[0] && client->pub_peer) {
         esp_peer_msg_t msg = {
@@ -380,6 +1460,8 @@ static stream_video_error_t sfu_send_set_publisher_http(
         esp_peer_send_msg(client->pub_peer, &msg);
         ESP_LOGI(TAG, "Publisher answer applied");
     }
+    sfu_send_trickle_from_sdp(client, filtered_sdp);
+    free(filtered_sdp);
     return STREAM_VIDEO_ERR_OK;
 }
 
@@ -423,12 +1505,23 @@ static stream_video_error_t sfu_send_ice_trickle_http(
         return STREAM_VIDEO_ERR_INVALID_ARG;
     }
     uint8_t buffer[2048];
+    const char *payload = candidate;
+    char json_candidate[512];
+    if (candidate[0] != '{') {
+        snprintf(json_candidate, sizeof(json_candidate),
+                 "{\"sdpMid\":\"0\",\"sdpMLineIndex\":0,\"candidate\":\"%s\",\"usernameFragment\":\"\"}",
+                 candidate);
+        payload = json_candidate;
+    }
+    ESP_LOGI(TAG, "ICETrickle send: peer=%d candidate_json=%s",
+             (int)peer_type,
+             payload);
     stream_video_sfu_signal_ICETrickle request =
         stream_video_sfu_signal_ICETrickle_init_zero;
 
     request.peer_type = peer_type;
     request.ice_candidate.funcs.encode = encode_string_cb;
-    request.ice_candidate.arg = (void *)candidate;
+    request.ice_candidate.arg = (void *)payload;
     request.session_id.funcs.encode = encode_string_cb;
     request.session_id.arg = (void *)client->join_session_id;
 
@@ -438,18 +1531,104 @@ static stream_video_error_t sfu_send_ice_trickle_http(
         return STREAM_VIDEO_ERR_FAIL;
     }
 
-    return sfu_send_signal_request(
+    uint8_t *resp = NULL;
+    size_t resp_len = 0;
+    stream_video_error_t err = sfu_send_signal_request_with_response(
         client,
         "stream.video.sfu.signal.SignalServer/IceTrickle",
         buffer,
-        stream.bytes_written);
+        stream.bytes_written,
+        &resp,
+        &resp_len);
+    if (err != STREAM_VIDEO_ERR_OK) {
+        return err;
+    }
+
+    char err_buf[256] = {0};
+    sfu_string_buffer_t err_ctx = { .buffer = err_buf, .capacity = sizeof(err_buf) };
+    stream_video_sfu_signal_ICETrickleResponse response =
+        stream_video_sfu_signal_ICETrickleResponse_init_zero;
+    response.error.message.funcs.decode = decode_string_cb;
+    response.error.message.arg = &err_ctx;
+
+    pb_istream_t istream = pb_istream_from_buffer(resp, resp_len);
+    if (!pb_decode(&istream, stream_video_sfu_signal_ICETrickleResponse_fields, &response)) {
+        ESP_LOGE(TAG, "Failed to decode ICETrickleResponse");
+        free(resp);
+        return STREAM_VIDEO_ERR_FAIL;
+    }
+    free(resp);
+
+    if (err_buf[0] ||
+        response.error.code != stream_video_sfu_models_ErrorCode_ERROR_CODE_UNSPECIFIED) {
+        ESP_LOGW(TAG, "ICETrickle error: code=%d message=%s",
+                 (int)response.error.code,
+                 err_buf[0] ? err_buf : "(empty)");
+    } else {
+        ESP_LOGI(TAG, "ICETrickle ok: peer=%d", (int)peer_type);
+    }
+    return STREAM_VIDEO_ERR_OK;
 }
 
-static int peer_state_handler(esp_peer_state_t state, void *ctx)
+static const char *sfu_peer_state_to_str(esp_peer_state_t state)
 {
-    (void)state;
-    (void)ctx;
+    switch (state) {
+        case ESP_PEER_STATE_CLOSED:
+            return "CLOSED";
+        case ESP_PEER_STATE_DISCONNECTED:
+            return "DISCONNECTED";
+        case ESP_PEER_STATE_NEW_CONNECTION:
+            return "NEW_CONNECTION";
+        case ESP_PEER_STATE_PAIRING:
+            return "PAIRING";
+        case ESP_PEER_STATE_PAIRED:
+            return "PAIRED";
+        case ESP_PEER_STATE_CONNECTING:
+            return "CONNECTING";
+        case ESP_PEER_STATE_CONNECTED:
+            return "CONNECTED";
+        case ESP_PEER_STATE_CONNECT_FAILED:
+            return "CONNECT_FAILED";
+        case ESP_PEER_STATE_DATA_CHANNEL_CONNECTED:
+            return "DATA_CHANNEL_CONNECTED";
+        case ESP_PEER_STATE_DATA_CHANNEL_OPENED:
+            return "DATA_CHANNEL_OPENED";
+        case ESP_PEER_STATE_DATA_CHANNEL_CLOSED:
+            return "DATA_CHANNEL_CLOSED";
+        case ESP_PEER_STATE_DATA_CHANNEL_DISCONNECTED:
+            return "DATA_CHANNEL_DISCONNECTED";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+static int peer_state_handler_common(esp_peer_state_t state, void *ctx, const char *label)
+{
+    stream_sfu_client_handle_t client = (stream_sfu_client_handle_t)ctx;
+    if (client) {
+        ESP_LOGI(TAG, "%s peer state changed: %s (%d) (pub=%p sub=%p)",
+                 label,
+                 sfu_peer_state_to_str(state),
+                 (int)state,
+                 (void *)client->pub_peer,
+                 (void *)client->peer);
+    } else {
+        ESP_LOGI(TAG, "%s peer state changed: %s (%d)",
+                 label,
+                 sfu_peer_state_to_str(state),
+                 (int)state);
+    }
     return 0;
+}
+
+static int peer_state_handler_pub(esp_peer_state_t state, void *ctx)
+{
+    return peer_state_handler_common(state, ctx, "Publisher");
+}
+
+static int peer_state_handler_sub(esp_peer_state_t state, void *ctx)
+{
+    return peer_state_handler_common(state, ctx, "Subscriber");
 }
 
 static int peer_msg_handler(esp_peer_msg_t *info, void *ctx)
@@ -514,28 +1693,84 @@ static void pub_peer_loop_task(void *arg)
 static void publish_task(void *arg)
 {
     stream_sfu_client_handle_t client = (stream_sfu_client_handle_t)arg;
+    uint32_t video_count = 0;
+    uint32_t audio_count = 0;
+    ESP_LOGI(TAG, "publish_task started (sink=%p pub_peer=%p video=%d audio=%d)",
+             (void *)client->publish_sink,
+             (void *)client->pub_peer,
+             client->publish_video ? 1 : 0,
+             client->publish_audio ? 1 : 0);
     while (client && client->publish_running && client->publish_sink && client->pub_peer) {
-        esp_capture_stream_frame_t frame = {};
-        esp_capture_err_t err = esp_capture_sink_acquire_frame(client->publish_sink, &frame, false);
-        if (err == ESP_CAPTURE_ERR_OK) {
-            if (frame.stream_type == ESP_CAPTURE_STREAM_TYPE_VIDEO && client->publish_video) {
+        if (client->publish_video) {
+            esp_capture_stream_frame_t frame = {
+                .stream_type = ESP_CAPTURE_STREAM_TYPE_VIDEO,
+            };
+            esp_capture_err_t err = esp_capture_sink_acquire_frame(client->publish_sink, &frame, false);
+            if (err == ESP_CAPTURE_ERR_OK) {
                 esp_peer_video_frame_t vframe = {
                     .pts = frame.pts,
                     .data = frame.data,
                     .size = frame.size,
                 };
                 esp_peer_send_video(client->pub_peer, &vframe);
-            } else if (frame.stream_type == ESP_CAPTURE_STREAM_TYPE_AUDIO && client->publish_audio) {
+                video_count++;
+                if (video_count == 1) {
+                    ESP_LOGI(TAG, "Sent first video frame (size=%u pts=%u)",
+                             (unsigned)frame.size,
+                             (unsigned)frame.pts);
+                }
+                if ((video_count % 60) == 0) {
+                    ESP_LOGI(TAG, "Sent video frames: %u (last size=%u pts=%u)",
+                             (unsigned)video_count,
+                             (unsigned)frame.size,
+                             (unsigned)frame.pts);
+                }
+                esp_capture_sink_release_frame(client->publish_sink, &frame);
+            } else {
+                static uint32_t video_errs = 0;
+                video_errs++;
+                if (video_errs <= 5 || (video_errs % 200) == 0) {
+                    ESP_LOGW(TAG, "Video frame acquire failed: err=%d (count=%u)",
+                             (int)err, (unsigned)video_errs);
+                }
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+        }
+
+        if (client->publish_audio) {
+            esp_capture_stream_frame_t frame = {
+                .stream_type = ESP_CAPTURE_STREAM_TYPE_AUDIO,
+            };
+            esp_capture_err_t err = esp_capture_sink_acquire_frame(client->publish_sink, &frame, false);
+            if (err == ESP_CAPTURE_ERR_OK) {
                 esp_peer_audio_frame_t aframe = {
                     .pts = frame.pts,
                     .data = frame.data,
                     .size = frame.size,
                 };
                 esp_peer_send_audio(client->pub_peer, &aframe);
+                audio_count++;
+                if (audio_count == 1) {
+                    ESP_LOGI(TAG, "Sent first audio frame (size=%u pts=%u)",
+                             (unsigned)frame.size,
+                             (unsigned)frame.pts);
+                }
+                if ((audio_count % 120) == 0) {
+                    ESP_LOGI(TAG, "Sent audio frames: %u (last size=%u pts=%u)",
+                             (unsigned)audio_count,
+                             (unsigned)frame.size,
+                             (unsigned)frame.pts);
+                }
+                esp_capture_sink_release_frame(client->publish_sink, &frame);
+            } else {
+                static uint32_t audio_errs = 0;
+                audio_errs++;
+                if (audio_errs <= 5 || (audio_errs % 200) == 0) {
+                    ESP_LOGW(TAG, "Audio frame acquire failed: err=%d (count=%u)",
+                             (int)err, (unsigned)audio_errs);
+                }
+                vTaskDelay(pdMS_TO_TICKS(10));
             }
-            esp_capture_sink_release_frame(client->publish_sink, &frame);
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(10));
         }
     }
     vTaskDelete(NULL);
@@ -572,11 +1807,11 @@ static stream_video_error_t sfu_peer_ensure(stream_sfu_client_handle_t client)
             .height = 720,
             .fps = 30,
         },
-        .enable_data_channel = true,
+        .enable_data_channel = false,
         .manual_ch_create = false,
         .extra_cfg = &default_cfg,
         .extra_size = sizeof(default_cfg),
-        .on_state = peer_state_handler,
+        .on_state = peer_state_handler_sub,
         .on_msg = peer_msg_handler,
         .ctx = client,
     };
@@ -626,15 +1861,15 @@ static stream_video_error_t sfu_pub_peer_ensure(stream_sfu_client_handle_t clien
         },
         .video_info = {
             .codec = ESP_PEER_VIDEO_CODEC_H264,
-            .width = 1280,
-            .height = 720,
-            .fps = 30,
+            .width = 160,
+            .height = 120,
+            .fps = 10,
         },
-        .enable_data_channel = true,
+        .enable_data_channel = false,
         .manual_ch_create = false,
         .extra_cfg = &default_cfg,
         .extra_size = sizeof(default_cfg),
-        .on_state = peer_state_handler,
+        .on_state = peer_state_handler_pub,
         .on_msg = peer_msg_handler_pub,
         .ctx = client,
     };
@@ -804,18 +2039,58 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
                 sfu_string_buffer_t ice_ctx = { .buffer = ice_buf, .capacity = sizeof(ice_buf) };
                 sfu_string_buffer_t err_ctx = { .buffer = err_buf, .capacity = sizeof(err_buf) };
 
-                stream_video_sfu_SfuEvent event = stream_video_sfu_SfuEvent_init_zero;
-                event.event_payload.subscriber_offer.sdp.funcs.decode = decode_string_cb;
-                event.event_payload.subscriber_offer.sdp.arg = &sdp_ctx;
-                event.event_payload.ice_trickle.ice_candidate.funcs.decode = decode_string_cb;
-                event.event_payload.ice_trickle.ice_candidate.arg = &ice_ctx;
-                event.event_payload.error.error.message.funcs.decode = decode_string_cb;
-                event.event_payload.error.error.message.arg = &err_ctx;
-
+                stream_video_sfu_SfuEvent event_probe = stream_video_sfu_SfuEvent_init_zero;
                 pb_istream_t stream = pb_istream_from_buffer(
                     (const uint8_t *)data->data_ptr,
                     (size_t)data->data_len);
-                if (pb_decode(&stream, stream_video_sfu_SfuEvent_fields, &event)) {
+                if (!pb_decode(&stream, stream_video_sfu_SfuEvent_fields, &event_probe)) {
+                    ESP_LOGE(TAG, "Failed to decode SFU event: %s (len=%d)",
+                             PB_GET_ERROR(&stream), data->data_len);
+                    break;
+                }
+
+                sfu_publish_options_ctx_t publish_ctx = {
+                    .options = client->publish_options,
+                    .capacity = SFU_MAX_PUBLISH_TRACK_IDS,
+                    .count = 0,
+                };
+                stream_video_sfu_SfuEvent event = stream_video_sfu_SfuEvent_init_zero;
+                event.which_event_payload = event_probe.which_event_payload;
+                switch (event_probe.which_event_payload) {
+                    case stream_video_sfu_SfuEvent_subscriber_offer_tag:
+                        event.event_payload.subscriber_offer.sdp.funcs.decode = decode_string_cb;
+                        event.event_payload.subscriber_offer.sdp.arg = &sdp_ctx;
+                        break;
+                    case stream_video_sfu_SfuEvent_publisher_answer_tag:
+                        event.event_payload.publisher_answer.sdp.funcs.decode = decode_string_cb;
+                        event.event_payload.publisher_answer.sdp.arg = &sdp_ctx;
+                        break;
+                    case stream_video_sfu_SfuEvent_ice_trickle_tag:
+                        event.event_payload.ice_trickle.ice_candidate.funcs.decode = decode_string_cb;
+                        event.event_payload.ice_trickle.ice_candidate.arg = &ice_ctx;
+                        break;
+                    case stream_video_sfu_SfuEvent_error_tag:
+                        event.event_payload.error.error.message.funcs.decode = decode_string_cb;
+                        event.event_payload.error.error.message.arg = &err_ctx;
+                        break;
+                    case stream_video_sfu_SfuEvent_join_response_tag:
+                        event.event_payload.join_response.publish_options.funcs.decode = decode_publish_options_cb;
+                        event.event_payload.join_response.publish_options.arg = &publish_ctx;
+                        break;
+                    case stream_video_sfu_SfuEvent_change_publish_options_tag:
+                        event.event_payload.change_publish_options.publish_options.funcs.decode = decode_publish_options_cb;
+                        event.event_payload.change_publish_options.publish_options.arg = &publish_ctx;
+                        break;
+                    default:
+                        break;
+                }
+
+                stream = pb_istream_from_buffer(
+                    (const uint8_t *)data->data_ptr,
+                    (size_t)data->data_len);
+                if (pb_decode_ex(&stream, stream_video_sfu_SfuEvent_fields, &event,
+                                 PB_DECODE_NOINIT)) {
+                    client->publish_option_count = publish_ctx.count;
                     ESP_LOGI(TAG, "SFU event decoded: which=%d (len=%d)",
                              (int)event.which_event_payload, data->data_len);
                     if (event.which_event_payload == 0) {
@@ -847,6 +2122,18 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
                             ESP_LOGI(TAG, "SFU ICE trickle received");
                             ESP_LOGI(TAG, "ICE candidate bytes: %u", (unsigned)ice_ctx.length);
                             if (ice_buf[0]) {
+                                char parsed_candidate[256];
+                                const char *candidate = ice_buf;
+                                if (ice_buf[0] == '{') {
+                                    if (sfu_extract_candidate_from_json(
+                                            ice_buf,
+                                            parsed_candidate,
+                                            sizeof(parsed_candidate))) {
+                                        candidate = parsed_candidate;
+                                    } else {
+                                        ESP_LOGW(TAG, "Failed to parse ICE candidate JSON");
+                                    }
+                                }
                                 esp_peer_handle_t target = NULL;
                                 if (event.event_payload.ice_trickle.peer_type ==
                                     stream_video_sfu_PeerType_PEER_TYPE_SUBSCRIBER) {
@@ -857,15 +2144,51 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
                                 if (target) {
                                     esp_peer_msg_t msg = {
                                         .type = ESP_PEER_MSG_TYPE_CANDIDATE,
-                                        .data = (uint8_t *)ice_buf,
-                                        .size = (int)strlen(ice_buf),
+                                        .data = (uint8_t *)candidate,
+                                        .size = (int)strlen(candidate),
                                     };
                                     esp_peer_send_msg(target, &msg);
                                 }
+                            } else {
+                                ESP_LOGW(TAG, "SFU ICE trickle has empty candidate (peer=%d)",
+                                         (int)event.event_payload.ice_trickle.peer_type);
                             }
                             break;
                         case stream_video_sfu_SfuEvent_join_response_tag:
                             ESP_LOGI(TAG, "SFU join response received");
+                            ESP_LOGI(TAG, "Join response: reconnected=%d deadline=%d publish_options=%u",
+                                     (int)event.event_payload.join_response.reconnected,
+                                     (int)event.event_payload.join_response.fast_reconnect_deadline_seconds,
+                                     (unsigned)client->publish_option_count);
+                            if (client->publish_option_count) {
+                                ESP_LOGI(TAG, "SFU publish options: %u", (unsigned)client->publish_option_count);
+                                for (size_t i = 0; i < client->publish_option_count; ++i) {
+                                    ESP_LOGI(TAG, "Publish option[%u]: id=%d type=%d codec=%s %ux%u@%u",
+                                             (unsigned)i,
+                                             (int)client->publish_options[i].id,
+                                             (int)client->publish_options[i].track_type,
+                                             client->publish_options[i].codec_name[0] ? client->publish_options[i].codec_name : "(none)",
+                                             (unsigned)client->publish_options[i].width,
+                                             (unsigned)client->publish_options[i].height,
+                                             (unsigned)client->publish_options[i].fps);
+                                }
+                            }
+                            break;
+                        case stream_video_sfu_SfuEvent_change_publish_options_tag:
+                            ESP_LOGI(TAG, "SFU change publish options received");
+                            if (client->publish_option_count) {
+                                ESP_LOGI(TAG, "SFU publish options: %u", (unsigned)client->publish_option_count);
+                                for (size_t i = 0; i < client->publish_option_count; ++i) {
+                                    ESP_LOGI(TAG, "Publish option[%u]: id=%d type=%d codec=%s %ux%u@%u",
+                                             (unsigned)i,
+                                             (int)client->publish_options[i].id,
+                                             (int)client->publish_options[i].track_type,
+                                             client->publish_options[i].codec_name[0] ? client->publish_options[i].codec_name : "(none)",
+                                             (unsigned)client->publish_options[i].width,
+                                             (unsigned)client->publish_options[i].height,
+                                             (unsigned)client->publish_options[i].fps);
+                                }
+                            }
                             break;
                         case stream_video_sfu_SfuEvent_error_tag:
                             ESP_LOGW(TAG, "SFU error received: code=%d retry=%d msg=%s",
@@ -931,6 +2254,7 @@ stream_video_error_t stream_sfu_client_create(
     // Copy configuration
     memcpy(&client->config, config, sizeof(stream_sfu_config_t));
     client->state = STREAM_SFU_STATE_DISCONNECTED;
+    sfu_reset_publish_options(client);
 
     // Create event group
     client->event_group = xEventGroupCreate();
@@ -1180,6 +2504,12 @@ stream_video_error_t stream_sfu_client_start_publishing(
         return STREAM_VIDEO_ERR_INVALID_STATE;
     }
 
+    ESP_LOGI(TAG, "start_publishing: sink=%p audio=%d video=%d state=%d",
+             (void *)sink,
+             publish_audio ? 1 : 0,
+             publish_video ? 1 : 0,
+             (int)client->state);
+
     stream_video_error_t err = sfu_pub_peer_ensure(client);
     if (err != STREAM_VIDEO_ERR_OK) {
         return err;
@@ -1189,9 +2519,18 @@ stream_video_error_t stream_sfu_client_start_publishing(
     client->publish_audio = publish_audio;
     client->publish_video = publish_video;
     client->publish_running = true;
+    sfu_reset_publish_track_ids(client);
+    sfu_reset_publish_options(client);
 
     if (!client->publish_task) {
-        xTaskCreate(publish_task, "sfu_publish", 8192, client, 5, &client->publish_task);
+        BaseType_t task_ok = xTaskCreate(publish_task, "sfu_publish", 8192, client, 5,
+                                         &client->publish_task);
+        ESP_LOGI(TAG, "start_publishing: publish_task created=%d handle=%p",
+                 (int)task_ok,
+                 (void *)client->publish_task);
+    } else {
+        ESP_LOGI(TAG, "start_publishing: publish_task already running handle=%p",
+                 (void *)client->publish_task);
     }
 
     return STREAM_VIDEO_ERR_OK;
@@ -1204,6 +2543,8 @@ stream_video_error_t stream_sfu_client_stop_publishing(stream_sfu_client_handle_
     }
     client->publish_running = false;
     client->publish_sink = NULL;
+    sfu_reset_publish_track_ids(client);
+    sfu_reset_publish_options(client);
     if (client->publish_task) {
         vTaskDelete(client->publish_task);
         client->publish_task = NULL;

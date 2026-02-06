@@ -16,4 +16,10 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # Initialize project
 project(${PROJECT_NAME})
 
+# Wrap lwIP sendto/recvfrom to trace STUN traffic.
+target_link_options(${PROJECT_NAME}.elf PRIVATE
+    "-Wl,--wrap=lwip_sendto"
+    "-Wl,--wrap=lwip_recvfrom"
+)
+
 

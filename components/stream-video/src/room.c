@@ -189,21 +189,27 @@ static stream_video_error_t on_join_call_response(
             if (server_count > 0 && servers) {
 #if defined(CONFIG_STREAM_VIDEO_STUN_OVERRIDE)
                 if (CONFIG_STREAM_VIDEO_STUN_OVERRIDE[0] != '\0') {
-                    for (size_t i = 0; i < server_count; ++i) {
-                        free(servers[i].stun_url);
-                        free(servers[i].user);
-                        free(servers[i].psw);
-                    }
-                    free(servers);
-                    servers = (esp_peer_ice_server_cfg_t *)calloc(1, sizeof(esp_peer_ice_server_cfg_t));
-                    if (servers) {
-                        servers[0].stun_url = strdup(CONFIG_STREAM_VIDEO_STUN_OVERRIDE);
-                        servers[0].user = strdup("");
-                        servers[0].psw = strdup("");
-                        server_count = 1;
-                        ESP_LOGI(TAG, "Using STUN override: %s", CONFIG_STREAM_VIDEO_STUN_OVERRIDE);
+                    esp_peer_ice_server_cfg_t *expanded =
+                        (esp_peer_ice_server_cfg_t *)calloc(server_count + 1, sizeof(esp_peer_ice_server_cfg_t));
+                    if (expanded) {
+                        for (size_t i = 0; i < server_count; ++i) {
+                            expanded[i].stun_url = strdup(servers[i].stun_url);
+                            expanded[i].user = strdup(servers[i].user);
+                            expanded[i].psw = strdup(servers[i].psw);
+                        }
+                        expanded[server_count].stun_url = strdup(CONFIG_STREAM_VIDEO_STUN_OVERRIDE);
+                        expanded[server_count].user = strdup("");
+                        expanded[server_count].psw = strdup("");
+                        ESP_LOGI(TAG, "Appending STUN override: %s", CONFIG_STREAM_VIDEO_STUN_OVERRIDE);
+                        for (size_t i = 0; i < server_count; ++i) {
+                            free(servers[i].stun_url);
+                            free(servers[i].user);
+                            free(servers[i].psw);
+                        }
+                        free(servers);
+                        servers = expanded;
+                        server_count += 1;
                     } else {
-                        server_count = 0;
                         ESP_LOGE(TAG, "Failed to allocate STUN override config");
                     }
                 }

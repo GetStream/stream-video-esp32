@@ -30,6 +30,7 @@
 #include "lwip/netdb.h"
 #include "lwip/inet.h"
 #include "stream_video.h"
+#include "sdkconfig.h"
 #include "stream_video_token.h"
 #include "media_publish.h"
 
@@ -39,9 +40,9 @@ static const char *TAG = "main";
 // CONFIGURATION - Edit these values for your setup
 // ============================================================================
 
-// WiFi credentials - configure these for your network
-#define WIFI_SSID "Airtel_s3"
-#define WIFI_PASSWORD "J@rd!ns3"
+// WiFi credentials (set in menuconfig)
+#define WIFI_SSID CONFIG_STREAM_VIDEO_WIFI_SSID
+#define WIFI_PASSWORD CONFIG_STREAM_VIDEO_WIFI_PASSWORD
 
 // User and Environment Selection (for auth request)
 #define STREAM_ENVIRONMENT "pronto"  // "production", "staging", or "development"
@@ -360,6 +361,7 @@ void app_main(void)
     esp_log_level_set("ICE", ESP_LOG_VERBOSE);
     esp_log_level_set("STUN", ESP_LOG_VERBOSE);
     esp_log_level_set("TURN", ESP_LOG_VERBOSE);
+    esp_log_level_set("stream_signaling_ws", ESP_LOG_WARN);
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "Stream Video ESP32-S3 - Complete Flow");
     ESP_LOGI(TAG, "========================================");

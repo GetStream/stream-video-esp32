@@ -1,5 +1,17 @@
 menu "Stream Video Example"
 
+config STREAM_VIDEO_WIFI_SSID
+    string "WiFi SSID"
+    default "Airtel_s3"
+    help
+        WiFi SSID for the example.
+
+config STREAM_VIDEO_WIFI_PASSWORD
+    string "WiFi password"
+    default ""
+    help
+        WiFi password for the example.
+
 config STREAM_VIDEO_FORCE_RELAY
     bool "Force TURN relay (ICE relay only)"
     default n
@@ -21,5 +33,51 @@ config STREAM_VIDEO_VENC_TASK_STACK
     help
         Stack size (bytes) for the video encoder task(s). Increase
         if the H264 encoder overflows the stack.
+
+config STREAM_VIDEO_WIDTH
+    int "Video width (pixels)"
+    range 160 1920
+    default 640
+    help
+        Video capture width for the camera and H264 encoder.
+
+config STREAM_VIDEO_HEIGHT
+    int "Video height (pixels)"
+    range 120 1080
+    default 480
+    help
+        Video capture height for the camera and H264 encoder.
+
+config STREAM_VIDEO_FPS
+    int "Video frame rate (fps)"
+    range 1 30
+    default 15
+    help
+        Video capture frame rate for the camera and H264 encoder.
+
+config STREAM_VIDEO_BITRATE
+    int "Video bitrate (bps)"
+    range 50000 5000000
+    default 800000
+    help
+        Target H264 bitrate for the capture sink encoder.
+
+choice STREAM_VIDEO_CAMERA_FMT
+    prompt "Camera pixel format"
+    default STREAM_VIDEO_CAMERA_FMT_YUV422
+    help
+        Select the pixel format requested from the camera sensor.
+
+config STREAM_VIDEO_CAMERA_FMT_YUV422
+    bool "YUV422 (YUYV)"
+    help
+        Most OV sensors default to YUV422 output.
+
+config STREAM_VIDEO_CAMERA_FMT_YUV420
+    bool "YUV420 (I420)"
+    help
+        Use only if the sensor supports YUV420 output.
+
+endchoice
 
 endmenu

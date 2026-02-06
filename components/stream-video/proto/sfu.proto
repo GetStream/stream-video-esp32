@@ -6,6 +6,8 @@ syntax = "proto3";
 
 package stream.video.sfu;
 
+import "models.proto";
+
 enum PeerType {
     PEER_TYPE_PUBLISHER_UNSPECIFIED = 0;
     PEER_TYPE_SUBSCRIBER = 1;
@@ -18,9 +20,6 @@ message ParticipantCount {
 
 message CallState {
     ParticipantCount participant_count = 3;
-}
-
-message PublishOption {
 }
 
 // Health check (client -> SFU)
@@ -43,7 +42,7 @@ message JoinResponse {
     CallState call_state = 1;
     bool reconnected = 2;
     int32 fast_reconnect_deadline_seconds = 3;
-    repeated PublishOption publish_options = 4;
+    repeated stream.video.sfu.models.PublishOption publish_options = 4;
 }
 
 message SubscriberOffer {
@@ -58,6 +57,11 @@ message PublisherAnswer {
 message ICETrickle {
     PeerType peer_type = 1;
     string ice_candidate = 2;
+}
+
+message ChangePublishOptions {
+    repeated stream.video.sfu.models.PublishOption publish_options = 1;
+    string reason = 2;
 }
 
 enum WebsocketReconnectStrategy {
@@ -95,6 +99,7 @@ message SfuEvent {
         ICETrickle ice_trickle = 5;
         JoinResponse join_response = 13;
         HealthCheckResponse health_check_response = 14;
+        ChangePublishOptions change_publish_options = 27;
         Error error = 18;
     }
 }

@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "media_publish.c"
+        "udp_trace.c"
     INCLUDE_DIRS
         "."
     REQUIRES
