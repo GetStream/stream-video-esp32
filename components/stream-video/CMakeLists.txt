@@ -18,14 +18,13 @@ idf_component_register(
         "src/utils/http_client.c"
         "src/auth/auth_client.c"
         "src/coordinator/coordinator_client.c"
-        "src/sfu/sfu_client.c"
     INCLUDE_DIRS
         "include"
     REQUIRES
         stream-video-protobuf
+        esp_capture
     PRIV_REQUIRES
         esp_peer
-        esp_capture
         # av_render and media_lib_os - these may be part of ESP-IDF or need manual installation
         # Uncomment when available:
         # av_render

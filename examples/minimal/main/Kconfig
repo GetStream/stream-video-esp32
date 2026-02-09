@@ -26,14 +26,6 @@ config STREAM_VIDEO_STUN_OVERRIDE
         Override ICE server list with a single STUN URL. Leave empty
         to use the SFU-provided ICE servers.
 
-config STREAM_VIDEO_VENC_TASK_STACK
-    int "Video encoder task stack size"
-    range 32768 262144
-    default 131072
-    help
-        Stack size (bytes) for the video encoder task(s). Increase
-        if the H264 encoder overflows the stack.
-
 config STREAM_VIDEO_WIDTH
     int "Video width (pixels)"
     range 160 1920

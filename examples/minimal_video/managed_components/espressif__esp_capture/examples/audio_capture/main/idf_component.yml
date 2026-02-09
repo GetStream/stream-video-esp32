@@ -1,0 +1,13 @@
+dependencies:
+  espressif/esp_audio_codec:
+    version: ~2.3
+  espressif/esp_board_manager:
+    version: ~0.5
+  espressif/esp_capture:
+    version: ~0.7.0
+  espressif/gmf_audio:
+    version: ~0.7
+  espressif/gmf_core:
+    version: ~0.7
+  espressif/gmf_video:
+    version: ~0.7

@@ -1,0 +1,20 @@
+# Default SDK configuration for minimal_video example
+# Target chip
+CONFIG_IDF_TARGET="esp32s3"
+
+# Enable DTLS-SRTP support (required by esp_peer component)
+CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
+CONFIG_MBEDTLS_SSL_DTLS_SRTP=y
+CONFIG_MBEDTLS_SSL_DTLS_CONNECTION_ID=y
+
+# Enable experimental features
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+
+# Partition table
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# FreeRTOS
+CONFIG_FREERTOS_HZ=1000
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y

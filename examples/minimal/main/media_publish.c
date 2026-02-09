@@ -2,6 +2,7 @@
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include <inttypes.h>
+#include <string.h>
 
 #include "esp_capture.h"
 #include "esp_capture_sink.h"

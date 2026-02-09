@@ -1,0 +1,40 @@
+dependencies:
+  cmake_utilities: 0.*
+  espressif/esp-sr:
+    version: 2.1.5
+  espressif/esp32-camera:
+    require: public
+    rules:
+    - if: target in [esp32s3, esp32s2]
+    version: ^2.0
+  espressif/esp_codec_dev:
+    version: ^1.3
+  espressif/esp_muxer:
+    require: public
+    version: ^1.1
+  espressif/esp_video:
+    require: public
+    rules:
+    - if: target in [esp32p4, esp32s3, esp32c3, esp32c5, esp32c6, esp32c61]
+    version: ^1.0
+  espressif/gmf_audio:
+    require: public
+    version: ^0.7
+  espressif/gmf_video:
+    require: public
+    version: ^0.7
+  idf: '>=4.4'
+description: Espressif Capture is a module for capture media stream from camera and
+  microphone
+documentation: https://github.com/espressif/esp-gmf/blob/main/packages/esp_capture/README.md
+issues: https://github.com/espressif/esp-gmf/issues
+repository: git://github.com/espressif/esp-gmf.git
+repository_info:
+  commit_sha: 263e9dc3a44a0572d4c145a6ae51a2dd8d5d95ba
+  path: ./packages/esp_capture
+tags:
+- multimedia
+- capture
+- gmf
+url: https://github.com/espressif/esp-gmf/tree/main/packages/esp_capture
+version: 0.7.9

@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html>
+<head><title>Cat & Sheep Chat + Fake Audio</title></head>
+<body>
+<button id="ctrl">Start Chat</button>
+<pre id="log"></pre>
+<script>
+
+const TEST_DURATION = 10000;
+const PERIOD_CAT = 1100;
+const PERIOD_SHEEP = 900;
+const AUDIO_FRAME_SAMPLES = 1024;
+
+const chatContent = [
+  { question: "Meow!", answer: "Mie-mie!" },
+  { question: "What's that fluffy cloud on your back?", answer: "It's my wool, silly cat!" },
+  { question: "Can I nap on it?", answer: "Only if you don't claw!" },
+  { question: "Deal.", answer: "Soft kitty." },
+];
+
+var chatting = 0;
+var catPeer = null;
+var sheepPeer = null;
+
+const log = (msg) => {
+  document.getElementById("log").textContent += msg + "\n";
+};
+
+document.getElementById('ctrl').onclick = async () => {
+  if (chatting == 0) {
+    document.getElementById("log").textContent = "";
+    document.getElementById('ctrl').textContent = "Stop Chat";
+    chatting = 1;
+    startPeers();
+  } else {
+    document.getElementById('ctrl').textContent = "Start Chat";
+    chatting = 0;
+    stopPeers();
+  }
+}
+
+function setupAudio(peer) {
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.value = 1000;
+  const gain = audioCtx.createGain();
+  gain.gain.value = 0.5;
+  const node = audioCtx.createScriptProcessor(AUDIO_FRAME_SAMPLES, 1, 1);
+  node.onaudioprocess = e => {
+    peer.audioSentFrames++;
+  };
+  const srcDest = audioCtx.createMediaStreamDestination();
+  osc.connect(node).connect(gain).connect(srcDest);
+  const streamOut = srcDest.stream;
+  streamOut.getTracks().forEach(track => peer.pc.addTrack(track, streamOut));
+
+  peer.audioContext = audioCtx;
+  peer.audioProcessor = node;
+  peer.audioSource = osc;
+}
+
+class Peer {
+  constructor(name, period) {
+    this.name = name;
+    this.period = period;
+    this.pc = new RTCPeerConnection();
+    this.timer = null;
+    this.connected = false;
+    this.audioProcessor = null;
+    this.audioContext = null;
+    this.audioSource = null;
+    this.audioSentFrames = 0;
+    this.audioRecvFrames = 0;
+
+    setupAudio(this);
+
+    this.pc.onicecandidate = e => {
+      if (e.candidate && this.other) {
+        this.other.pc.addIceCandidate(e.candidate);
+      }
+    };
+
+    this.pc.ondatachannel = e => {
+      this.dataChannel = e.channel;
+      this.setupDataChannel();
+    };
+
+    this.pc.onconnectionstatechange = () => {
+      log(`${this.name} connection state: ${this.pc.connectionState}`);
+      if (this.pc.connectionState === "connected") {
+        this.connected = true;
+        this.startSending();
+      } else if (this.pc.connectionState === "disconnected" || this.pc.connectionState === "closed") {
+        this.stop();
+      }
+    };
+
+    this.pc.ontrack = (e) => {
+      const remoteStream = e.streams[0];
+      const audioEl = new Audio();
+      audioEl.srcObject = remoteStream;
+      //audioEl.play(); // Required to start audio rendering
+      const remoteCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const srcNode = remoteCtx.createMediaStreamSource(remoteStream);
+      const processor = remoteCtx.createScriptProcessor(AUDIO_FRAME_SAMPLES, 1, 1);
+      srcNode.connect(processor).connect(remoteCtx.destination);
+      processor.onaudioprocess = e => {
+        this.audioRecvFrames++;
+      };
+
+      this.remoteAudioContext = remoteCtx;
+      this.remoteAudioProcessor = processor;
+      this.remoteAudioSource = srcNode;
+    };
+  }
+
+  setupDataChannel() {
+    this.dataChannel.onmessage = e => this.onData(e.data);
+  }
+
+  sendData(msg) {
+    if (this.dataChannel && this.dataChannel.readyState === "open") {
+      this.dataChannel.send(msg);
+    }
+  }
+
+  startSending() {
+    this.audioSource.start();
+    this.timer = setInterval(() => {
+      const sel = Math.floor(Math.random() * chatContent.length);
+      const msg = `${this.name}: ${chatContent[sel].question}`;
+      log(`Asking: ${msg}`);
+      this.sendData(msg);
+    }, this.period);
+  }
+
+  onData(msg) {
+    const otherName = this.other.name;
+    const content = msg.slice(otherName.length + 2);
+    const match = chatContent.find(c => c.question === content);
+    if (match) {
+      const reply = `${this.name}: ${match.answer}`;
+      this.sendData(reply);
+    } else {
+      log(`Answer: ${msg}`);
+      log(`🔊 ${this.name} - Sent: ${this.audioSentFrames}, Received: ${this.audioRecvFrames}\n`);
+    }
+  }
+
+  async connectTo(peer) {
+    this.other = peer;
+    peer.other = this;
+
+    this.dataChannel = this.pc.createDataChannel("chat");
+    this.setupDataChannel();
+
+    const offer = await this.pc.createOffer();
+    await this.pc.setLocalDescription(offer);
+    await peer.pc.setRemoteDescription(offer);
+
+    const answer = await peer.pc.createAnswer();
+    await peer.pc.setLocalDescription(answer);
+    await this.pc.setRemoteDescription(answer);
+  }
+
+  stop() {
+    clearInterval(this.timer);
+    if (this.audioProcessor) {
+      this.audioProcessor.disconnect();
+      this.audioProcessor = null;
+    }
+    if (this.audioSource) {
+      this.audioSource.disconnect();
+      this.audioSource = null;
+    }
+    if (this.audioContext) {
+      this.audioContext.close();
+      this.audioContext = null;
+    }
+    if (this.remoteAudioProcessor) {
+      this.remoteAudioProcessor.disconnect();
+      this.remoteAudioProcessor = null;
+    }
+    if (this.remoteAudioSource) {
+      this.remoteAudioSource.disconnect();
+      this.remoteAudioSource = null;
+    }
+    if (this.remoteAudioContext) {
+      this.remoteAudioContext.close();
+      this.remoteAudioContext = null;
+    }
+    this.pc.close();
+    log(`${this.name} stopped`);
+  }
+}
+
+async function startPeers() {
+  log("Starting Cat & Sheep WebRTC Demo...");
+  const cat = new Peer("🐱", PERIOD_CAT);
+  const sheep = new Peer("🐑", PERIOD_SHEEP);
+
+  catPeer = cat;
+  sheepPeer = sheep;
+
+  try {
+    await cat.connectTo(sheep);
+  } catch (error) {
+    log(`Connection error: ${error.message}`);
+  }
+
+  setTimeout(() => {
+    cat.stop();
+    sheep.stop();
+    log("Test finished.");
+  }, TEST_DURATION);
+}
+
+function stopPeers() {
+  if (catPeer) {
+    catPeer.stop();
+    catPeer = null;
+  }
+  if (sheepPeer) {
+    sheepPeer.stop();
+    sheepPeer = null;
+  }
+}
+
+</script>
+</body>
+</html>
