@@ -38,22 +38,6 @@ set(GENERATED_FILES
     "${GENERATED_DIR}/sfu_signal.pb.h"
 )
 
-if(PROTOC_EXECUTABLE AND NANOPB_GENERATOR)
-    add_custom_command(
-        OUTPUT ${GENERATED_FILES}
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${GENERATED_DIR}"
-        COMMAND ${PROTOC_EXECUTABLE}
-            --plugin=protoc-gen-nanopb=${NANOPB_GENERATOR}
-            --nanopb_out="${GENERATED_DIR}"
-            --proto_path="${PROTO_DIR}"
-            ${PROTO_FILES}
-        DEPENDS ${PROTO_FILES}
-        COMMENT "Generating nanopb sources"
-    )
-else()
-    message(WARNING "nanopb generator not found; using existing generated sources")
-endif()
-
 idf_component_register(
     SRCS
         "${GENERATED_DIR}/signaling.pb.c"
@@ -66,7 +50,24 @@ idf_component_register(
         nanopb
 )
 
-if(PROTOC_EXECUTABLE AND NANOPB_GENERATOR)
-    add_custom_target(stream_video_nanopb_gen DEPENDS ${GENERATED_FILES})
-    add_dependencies(${COMPONENT_LIB} stream_video_nanopb_gen)
+# add_custom_command/target are not available in CMake script mode
+# (used by ESP-IDF's component_get_requirements phase)
+if(NOT CMAKE_SCRIPT_MODE_FILE)
+    if(PROTOC_EXECUTABLE AND NANOPB_GENERATOR)
+        add_custom_command(
+            OUTPUT ${GENERATED_FILES}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${GENERATED_DIR}"
+            COMMAND ${PROTOC_EXECUTABLE}
+                --plugin=protoc-gen-nanopb=${NANOPB_GENERATOR}
+                --nanopb_out="${GENERATED_DIR}"
+                --proto_path="${PROTO_DIR}"
+                ${PROTO_FILES}
+            DEPENDS ${PROTO_FILES}
+            COMMENT "Generating nanopb sources"
+        )
+        add_custom_target(stream_video_nanopb_gen DEPENDS ${GENERATED_FILES})
+        add_dependencies(${COMPONENT_LIB} stream_video_nanopb_gen)
+    else()
+        message(WARNING "nanopb generator not found; using existing generated sources")
+    endif()
 endif()

@@ -23,9 +23,9 @@ idf_component_register(
         "include"
     REQUIRES
         stream-video-protobuf
+        esp_capture
     PRIV_REQUIRES
         esp_peer
-        esp_capture
         # av_render and media_lib_os - these may be part of ESP-IDF or need manual installation
         # Uncomment when available:
         # av_render
