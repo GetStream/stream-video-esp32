@@ -18,6 +18,7 @@ Thumbs.db
 
 # Generated files
 components/stream-video-protobuf/generated/*
+examples/minimal/managed_components/
 
 # Local temp checkouts
 .tmp/
