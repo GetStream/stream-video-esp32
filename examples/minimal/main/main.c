@@ -50,7 +50,7 @@ static const char *TAG = "main";
 
 // Call Selection (for joining call)
 #define STREAM_CALL_TYPE "default"       // Call type (e.g., "default", "livestream")
-#define STREAM_CALL_ID "79cYh3J5JgGk"         // Call ID to join (can be NULL to create new call)
+#define STREAM_CALL_ID "632460554423"         // Call ID to join (can be NULL to create new call)
 
 // Global state
 static stream_video_client_handle_t g_client = NULL;
@@ -362,6 +362,9 @@ void app_main(void)
     esp_log_level_set("STUN", ESP_LOG_VERBOSE);
     esp_log_level_set("TURN", ESP_LOG_VERBOSE);
     esp_log_level_set("stream_signaling_ws", ESP_LOG_WARN);
+    ESP_LOGI(TAG, "Build marker: %s %s", __DATE__, __TIME__);
+    ESP_LOGI(TAG, "Build call ID: %s", STREAM_CALL_ID ? STREAM_CALL_ID : "NULL");
+    ESP_LOGI(TAG, "Encoder stack bytes: %d", CONFIG_STREAM_VIDEO_VENC_TASK_STACK);
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "Stream Video ESP32-S3 - Complete Flow");
     ESP_LOGI(TAG, "========================================");
@@ -370,7 +373,20 @@ void app_main(void)
     ESP_LOGI(TAG, "  User ID: %s", STREAM_USER_ID ? STREAM_USER_ID : "NULL (auto-generated)");
     ESP_LOGI(TAG, "  Call Type: %s", STREAM_CALL_TYPE);
     ESP_LOGI(TAG, "  Call ID: %s", STREAM_CALL_ID ? STREAM_CALL_ID : "NULL (create new)");
+#ifdef CONFIG_STREAM_VIDEO_STUN_ONLY
+    ESP_LOGI(TAG, "  STUN-only: enabled");
+#else
+    ESP_LOGI(TAG, "  STUN-only: disabled");
+#endif
     ESP_LOGI(TAG, "========================================");
+
+#if defined(CONFIG_STREAM_VIDEO_RUN_RES_TEST)
+    ESP_LOGI(TAG, "Running resolution test; streaming is disabled.");
+    media_publish_run_resolution_test();
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+#endif
 
     // Initialize NVS (needed for WiFi)
     esp_err_t ret = nvs_flash_init();

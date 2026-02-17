@@ -22,6 +22,9 @@
 #include "esp_capture_sink.h"
 #include "esp_capture_types.h"
 #include "esp_system.h"
+#include "esp_timer.h"
+#ifdef CONFIG_STREAM_AUDIO_DUMP_OPUS
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -37,6 +40,22 @@ static const char *TAG = "stream_sfu";
 #define SFU_PUB_TASK_STACK_BYTES 24576
 
 #define SFU_MAX_PUBLISH_TRACK_IDS 4
+#ifdef CONFIG_STREAM_AUDIO_CHANNELS
+#define STREAM_SFU_AUDIO_CHANNELS CONFIG_STREAM_AUDIO_CHANNELS
+#else
+#define STREAM_SFU_AUDIO_CHANNELS 2
+#endif
+#ifdef CONFIG_STREAM_AUDIO_DUMP_OPUS
+#ifndef CONFIG_STREAM_AUDIO_DUMP_SECONDS
+#define CONFIG_STREAM_AUDIO_DUMP_SECONDS 30
+#endif
+#ifndef CONFIG_STREAM_AUDIO_DUMP_MAX_BYTES
+#define CONFIG_STREAM_AUDIO_DUMP_MAX_BYTES (256 * 1024)
+#endif
+static uint8_t *s_opus_dump_buf = NULL;
+static size_t s_opus_dump_len = 0;
+static size_t s_opus_dump_cap = 0;
+#endif
 
 // Event bits for SFU WebSocket events
 #define SFU_CONNECTED_BIT    BIT0
@@ -480,6 +499,11 @@ static char *sfu_filter_sdp(const char *sdp, bool include_audio, size_t *out_len
     bool keep_section = false;
     int current_mid_index = -1;
     bool current_is_video = false;
+    bool current_is_audio = false;
+    bool audio_has_fmtp_111 = false;
+    bool audio_has_rtcpfb_111 = false;
+    bool audio_has_red_rtpmap = false;
+    bool audio_has_red_fmtp = false;
     char line[512];
     const char *cursor = sdp;
     while (*cursor) {
@@ -498,6 +522,23 @@ static char *sfu_filter_sdp(const char *sdp, bool include_audio, size_t *out_len
 
         if (strncmp(line, "m=", 2) == 0) {
             if (in_section && keep_section && section_builder.buffer) {
+                if (current_is_audio) {
+                    if (!audio_has_rtcpfb_111) {
+                        sfu_builder_append(&section_builder, "a=rtcp-fb:111 transport-cc\r\n");
+                    }
+                    if (!audio_has_fmtp_111) {
+                        sfu_builder_append(&section_builder, "a=fmtp:111 minptime=10;useinbandfec=1\r\n");
+                    }
+                    if (!audio_has_red_rtpmap) {
+                        char red_line[64];
+                        snprintf(red_line, sizeof(red_line), "a=rtpmap:63 red/48000/%u\r\n",
+                                 (unsigned)STREAM_SFU_AUDIO_CHANNELS);
+                        sfu_builder_append(&section_builder, red_line);
+                    }
+                    if (!audio_has_red_fmtp) {
+                        sfu_builder_append(&section_builder, "a=fmtp:63 111/111\r\n");
+                    }
+                }
                 if (current_is_video) {
                     sfu_append_filtered_video_section(&section_out, section_builder.buffer);
                 } else {
@@ -509,16 +550,35 @@ static char *sfu_filter_sdp(const char *sdp, bool include_audio, size_t *out_len
             keep_section = false;
             current_mid_index = -1;
             current_is_video = false;
+            current_is_audio = false;
+            audio_has_fmtp_111 = false;
+            audio_has_rtcpfb_111 = false;
+            audio_has_red_rtpmap = false;
+            audio_has_red_fmtp = false;
             if (strncmp(line + 2, "video", 5) == 0) {
                 keep_section = true;
                 current_is_video = true;
             } else if (strncmp(line + 2, "audio", 5) == 0 && include_audio) {
                 keep_section = true;
                 current_is_video = false;
+                current_is_audio = true;
             }
             if (keep_section) {
-                sfu_builder_append(&section_builder, line);
-                sfu_builder_append(&section_builder, "\r\n");
+                if (current_is_audio) {
+                    int port = 0;
+                    char proto[64] = {0};
+                    if (sscanf(line, "m=audio %d %63s", &port, proto) == 2) {
+                        char mline[128];
+                        snprintf(mline, sizeof(mline), "m=audio %d %s 111 63\r\n", port, proto);
+                        sfu_builder_append(&section_builder, mline);
+                    } else {
+                        sfu_builder_append(&section_builder, line);
+                        sfu_builder_append(&section_builder, "\r\n");
+                    }
+                } else {
+                    sfu_builder_append(&section_builder, line);
+                    sfu_builder_append(&section_builder, "\r\n");
+                }
             }
             continue;
         }
@@ -533,6 +593,40 @@ static char *sfu_filter_sdp(const char *sdp, bool include_audio, size_t *out_len
         }
 
         if (keep_section) {
+            if (current_is_audio &&
+                STREAM_SFU_AUDIO_CHANNELS == 1 &&
+                strncmp(line, "a=rtpmap:", 9) == 0 &&
+                strstr(line, "opus/48000/2")) {
+                char mono_line[128];
+                const char *colon = strchr(line, ':');
+                if (colon) {
+                    const char *space = strchr(colon + 1, ' ');
+                    if (space) {
+                        size_t prefix_len = (size_t)(space - line);
+                        if (prefix_len < sizeof(mono_line)) {
+                            memcpy(mono_line, line, prefix_len);
+                            mono_line[prefix_len] = '\0';
+                            snprintf(mono_line + prefix_len,
+                                     sizeof(mono_line) - prefix_len,
+                                     " opus/48000/1");
+                            sfu_builder_append(&section_builder, mono_line);
+                            sfu_builder_append(&section_builder, "\r\n");
+                            continue;
+                        }
+                    }
+                }
+            }
+            if (current_is_audio) {
+                if (strncmp(line, "a=fmtp:111", 10) == 0) {
+                    audio_has_fmtp_111 = true;
+                } else if (strncmp(line, "a=rtcp-fb:111", 13) == 0) {
+                    audio_has_rtcpfb_111 = true;
+                } else if (strncmp(line, "a=rtpmap:63", 11) == 0 && strstr(line, "red/48000")) {
+                    audio_has_red_rtpmap = true;
+                } else if (strncmp(line, "a=fmtp:63", 9) == 0) {
+                    audio_has_red_fmtp = true;
+                }
+            }
             if (strcmp(line, "a=sendrecv") == 0) {
                 sfu_builder_append(&section_builder, "a=sendonly\r\n");
                 continue;
@@ -560,6 +654,23 @@ static char *sfu_filter_sdp(const char *sdp, bool include_audio, size_t *out_len
     }
 
     if (in_section && keep_section && section_builder.buffer) {
+        if (current_is_audio) {
+            if (!audio_has_rtcpfb_111) {
+                sfu_builder_append(&section_builder, "a=rtcp-fb:111 transport-cc\r\n");
+            }
+            if (!audio_has_fmtp_111) {
+                sfu_builder_append(&section_builder, "a=fmtp:111 minptime=10;useinbandfec=1\r\n");
+            }
+            if (!audio_has_red_rtpmap) {
+                char red_line[64];
+                snprintf(red_line, sizeof(red_line), "a=rtpmap:63 red/48000/%u\r\n",
+                         (unsigned)STREAM_SFU_AUDIO_CHANNELS);
+                sfu_builder_append(&section_builder, red_line);
+            }
+            if (!audio_has_red_fmtp) {
+                sfu_builder_append(&section_builder, "a=fmtp:63 111/111\r\n");
+            }
+        }
         if (current_is_video) {
             sfu_append_filtered_video_section(&section_out, section_builder.buffer);
         } else {
@@ -1695,6 +1806,17 @@ static void publish_task(void *arg)
     stream_sfu_client_handle_t client = (stream_sfu_client_handle_t)arg;
     uint32_t video_count = 0;
     uint32_t audio_count = 0;
+    uint64_t audio_bitrate_bytes = 0;
+    int64_t audio_bitrate_start_us = 0;
+    uint32_t audio_bitrate_frames = 0;
+    uint32_t audio_bitrate_min = 0;
+    uint32_t audio_bitrate_max = 0;
+#ifdef CONFIG_STREAM_AUDIO_DUMP_OPUS
+    int64_t audio_dump_start_us = 0;
+    uint32_t audio_dump_frames = 0;
+    size_t audio_dump_bytes = 0;
+    bool audio_dump_done = false;
+#endif
     ESP_LOGI(TAG, "publish_task started (sink=%p pub_peer=%p video=%d audio=%d)",
              (void *)client->publish_sink,
              (void *)client->pub_peer,
@@ -1738,11 +1860,82 @@ static void publish_task(void *arg)
         }
 
         if (client->publish_audio) {
-            esp_capture_stream_frame_t frame = {
-                .stream_type = ESP_CAPTURE_STREAM_TYPE_AUDIO,
-            };
-            esp_capture_err_t err = esp_capture_sink_acquire_frame(client->publish_sink, &frame, false);
-            if (err == ESP_CAPTURE_ERR_OK) {
+            bool got_audio = false;
+            while (true) {
+                esp_capture_stream_frame_t frame = {
+                    .stream_type = ESP_CAPTURE_STREAM_TYPE_AUDIO,
+                };
+                esp_capture_err_t err = esp_capture_sink_acquire_frame(client->publish_sink, &frame, true);
+                if (err != ESP_CAPTURE_ERR_OK) {
+                    break;
+                }
+                got_audio = true;
+                if (audio_bitrate_start_us == 0) {
+                    audio_bitrate_start_us = esp_timer_get_time();
+                    audio_bitrate_min = (uint32_t)frame.size;
+                    audio_bitrate_max = (uint32_t)frame.size;
+                }
+                audio_bitrate_bytes += frame.size;
+                audio_bitrate_frames++;
+                if ((uint32_t)frame.size < audio_bitrate_min) {
+                    audio_bitrate_min = (uint32_t)frame.size;
+                }
+                if ((uint32_t)frame.size > audio_bitrate_max) {
+                    audio_bitrate_max = (uint32_t)frame.size;
+                }
+#ifdef CONFIG_STREAM_AUDIO_DUMP_OPUS
+                if (!audio_dump_done) {
+                    if (!s_opus_dump_buf) {
+                        s_opus_dump_cap = (size_t)CONFIG_STREAM_AUDIO_DUMP_MAX_BYTES;
+                        s_opus_dump_buf = (uint8_t *)malloc(s_opus_dump_cap);
+                        s_opus_dump_len = 0;
+                        if (s_opus_dump_buf) {
+                            audio_dump_start_us = esp_timer_get_time();
+                            ESP_LOGI(TAG, "Opus RAM dump started: cap=%u bytes (%ds) buf=%p",
+                                     (unsigned)s_opus_dump_cap,
+                                     (int)CONFIG_STREAM_AUDIO_DUMP_SECONDS,
+                                     (void *)s_opus_dump_buf);
+                        } else {
+                            ESP_LOGW(TAG, "Opus RAM dump alloc failed (%u bytes)",
+                                     (unsigned)CONFIG_STREAM_AUDIO_DUMP_MAX_BYTES);
+                            audio_dump_done = true;
+                        }
+                    } else if (s_opus_dump_len == 0 && audio_dump_start_us == 0) {
+                        audio_dump_start_us = esp_timer_get_time();
+                        ESP_LOGI(TAG, "Opus RAM dump restarted: cap=%u bytes buf=%p",
+                                 (unsigned)s_opus_dump_cap,
+                                 (void *)s_opus_dump_buf);
+                    }
+                    if (s_opus_dump_buf) {
+                        int64_t now_us = esp_timer_get_time();
+                        if ((now_us - audio_dump_start_us) <=
+                            ((int64_t)CONFIG_STREAM_AUDIO_DUMP_SECONDS * 1000000LL)) {
+                            uint32_t frame_len = (uint32_t)frame.size;
+                            size_t needed = sizeof(frame_len) + frame.size;
+                            if (s_opus_dump_len + needed <= s_opus_dump_cap) {
+                                memcpy(s_opus_dump_buf + s_opus_dump_len, &frame_len, sizeof(frame_len));
+                                s_opus_dump_len += sizeof(frame_len);
+                                memcpy(s_opus_dump_buf + s_opus_dump_len, frame.data, frame.size);
+                                s_opus_dump_len += frame.size;
+                                audio_dump_frames++;
+                                audio_dump_bytes += frame.size;
+                            } else {
+                                audio_dump_done = true;
+                                ESP_LOGW(TAG, "Opus RAM dump full at %u bytes (cap=%u)",
+                                         (unsigned)s_opus_dump_len,
+                                         (unsigned)s_opus_dump_cap);
+                            }
+                        } else {
+                            audio_dump_done = true;
+                            ESP_LOGI(TAG, "Opus RAM dump complete: frames=%u bytes=%u used=%u buf=%p",
+                                     (unsigned)audio_dump_frames,
+                                     (unsigned)audio_dump_bytes,
+                                     (unsigned)s_opus_dump_len,
+                                     (void *)s_opus_dump_buf);
+                        }
+                    }
+                }
+#endif
                 esp_peer_audio_frame_t aframe = {
                     .pts = frame.pts,
                     .data = frame.data,
@@ -1761,18 +1954,51 @@ static void publish_task(void *arg)
                              (unsigned)frame.size,
                              (unsigned)frame.pts);
                 }
+                if (audio_bitrate_start_us > 0) {
+                    int64_t now_us = esp_timer_get_time();
+                    if ((now_us - audio_bitrate_start_us) >= 5000000LL) {
+                        double seconds = (double)(now_us - audio_bitrate_start_us) / 1000000.0;
+                        double kbps = (audio_bitrate_bytes * 8.0) / (seconds * 1000.0);
+                        uint32_t avg_size = audio_bitrate_frames ?
+                            (uint32_t)(audio_bitrate_bytes / audio_bitrate_frames) : 0;
+                        ESP_LOGI(TAG,
+                                 "Audio encoded bitrate: %.1f kbps over %.1fs (bytes=%u frames=%u avg=%u min=%u max=%u)",
+                                 kbps,
+                                 seconds,
+                                 (unsigned)audio_bitrate_bytes,
+                                 (unsigned)audio_bitrate_frames,
+                                 (unsigned)avg_size,
+                                 (unsigned)audio_bitrate_min,
+                                 (unsigned)audio_bitrate_max);
+                        audio_bitrate_bytes = 0;
+                        audio_bitrate_frames = 0;
+                        audio_bitrate_min = 0;
+                        audio_bitrate_max = 0;
+                        audio_bitrate_start_us = now_us;
+                    }
+                }
                 esp_capture_sink_release_frame(client->publish_sink, &frame);
-            } else {
+            }
+            if (!got_audio) {
                 static uint32_t audio_errs = 0;
                 audio_errs++;
                 if (audio_errs <= 5 || (audio_errs % 200) == 0) {
                     ESP_LOGW(TAG, "Audio frame acquire failed: err=%d (count=%u)",
-                             (int)err, (unsigned)audio_errs);
+                             (int)ESP_CAPTURE_ERR_NOT_FOUND, (unsigned)audio_errs);
                 }
-                vTaskDelay(pdMS_TO_TICKS(10));
+                vTaskDelay(pdMS_TO_TICKS(5));
             }
         }
     }
+#ifdef CONFIG_STREAM_AUDIO_DUMP_OPUS
+    if (s_opus_dump_buf && !audio_dump_done) {
+        ESP_LOGI(TAG, "Opus RAM dump stopped: frames=%u bytes=%u used=%u buf=%p",
+                 (unsigned)audio_dump_frames,
+                 (unsigned)audio_dump_bytes,
+                 (unsigned)s_opus_dump_len,
+                 (void *)s_opus_dump_buf);
+    }
+#endif
     vTaskDelete(NULL);
 }
 
@@ -1788,18 +2014,13 @@ static stream_video_error_t sfu_peer_ensure(stream_sfu_client_handle_t client)
         .server_lists = client->ice_servers,
         .server_num = (uint8_t)client->ice_server_count,
         .role = ESP_PEER_ROLE_CONTROLLED,
-        .ice_trans_policy =
-#if CONFIG_STREAM_VIDEO_FORCE_RELAY
-            ESP_PEER_ICE_TRANS_POLICY_RELAY,
-#else
-            ESP_PEER_ICE_TRANS_POLICY_ALL,
-#endif
+        .ice_trans_policy = ESP_PEER_ICE_TRANS_POLICY_ALL,
         .audio_dir = ESP_PEER_MEDIA_DIR_RECV_ONLY,
         .video_dir = ESP_PEER_MEDIA_DIR_RECV_ONLY,
         .audio_info = {
             .codec = ESP_PEER_AUDIO_CODEC_OPUS,
             .sample_rate = 48000,
-            .channel = 2,
+            .channel = STREAM_SFU_AUDIO_CHANNELS,
         },
         .video_info = {
             .codec = ESP_PEER_VIDEO_CODEC_H264,
@@ -1846,18 +2067,13 @@ static stream_video_error_t sfu_pub_peer_ensure(stream_sfu_client_handle_t clien
         .server_lists = client->ice_servers,
         .server_num = (uint8_t)client->ice_server_count,
         .role = ESP_PEER_ROLE_CONTROLLING,
-        .ice_trans_policy =
-#if CONFIG_STREAM_VIDEO_FORCE_RELAY
-            ESP_PEER_ICE_TRANS_POLICY_RELAY,
-#else
-            ESP_PEER_ICE_TRANS_POLICY_ALL,
-#endif
+        .ice_trans_policy = ESP_PEER_ICE_TRANS_POLICY_ALL,
         .audio_dir = ESP_PEER_MEDIA_DIR_SEND_ONLY,
         .video_dir = ESP_PEER_MEDIA_DIR_SEND_ONLY,
         .audio_info = {
             .codec = ESP_PEER_AUDIO_CODEC_OPUS,
             .sample_rate = 48000,
-            .channel = 2,
+            .channel = STREAM_SFU_AUDIO_CHANNELS,
         },
         .video_info = {
             .codec = ESP_PEER_VIDEO_CODEC_H264,

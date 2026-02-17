@@ -140,7 +140,7 @@ dependencies:
       require: private
       version: '>=4.0'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 1.5.4
   espressif/esp_h264:
@@ -189,7 +189,7 @@ dependencies:
     version: 1.0.0
   espressif/esp_muxer:
     component_hash: 
-      cc0f78844aa85fe6da69aef543c039c18eda0ca43c0fa5c61ba3d6abe8a2369b
+      0e3f27c1ec96035c846b9ccc262190045e93b721defe13060d0e4ab712d98852
     dependencies:
     - name: idf
       require: private
@@ -197,7 +197,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.1.3
+    version: 1.2.0
   espressif/esp_new_jpeg:
     component_hash: 
       2f06f88e94fbc781b26a9be4291ff4ffc88596c90436a1e1358a7a38296b44ae
@@ -324,9 +324,10 @@ dependencies:
     version: 0.4.9
 direct_dependencies:
 - espressif/esp_capture
+- espressif/esp_codec_dev
 - espressif/esp_peer
 - espressif/esp_websocket_client
 - livekit/nanopb
-manifest_hash: 91a835eb5d13d59693eb7eee2b3e0b43084c55c18ada95af0b48281890109e68
+manifest_hash: 2336b758822a6fc47c4a5d6d7236ad1800fcf6380c4ae70c04e02362f9dcd11e
 target: esp32s3
 version: 2.0.0

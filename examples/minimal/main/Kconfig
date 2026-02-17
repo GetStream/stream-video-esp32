@@ -12,19 +12,24 @@ config STREAM_VIDEO_WIFI_PASSWORD
     help
         WiFi password for the example.
 
-config STREAM_VIDEO_FORCE_RELAY
-    bool "Force TURN relay (ICE relay only)"
-    default n
-    help
-        Force ICE transport policy to RELAY so only TURN candidates
-        are used for pairing.
-
 config STREAM_VIDEO_STUN_OVERRIDE
     string "STUN server override (empty = use SFU list)"
     default "stun:stun.l.google.com:19302"
     help
         Override ICE server list with a single STUN URL. Leave empty
         to use the SFU-provided ICE servers.
+
+config STREAM_VIDEO_ALLOW_TCP_TURN
+    bool "Allow TURN over TCP/TLS when provided"
+    default n
+    help
+        Prefer TURN URLs with transport=tcp or turns:// when available.
+
+config STREAM_VIDEO_STUN_ONLY
+    bool "Use STUN only (ignore TURN servers)"
+    default n
+    help
+        Discard TURN URLs from the SFU ICE list and use only STUN.
 
 config STREAM_VIDEO_VENC_TASK_STACK
     int "Video encoder task stack size"
@@ -33,6 +38,39 @@ config STREAM_VIDEO_VENC_TASK_STACK
     help
         Stack size (bytes) for the video encoder task(s). Increase
         if the H264 encoder overflows the stack.
+
+choice STREAM_VIDEO_BOARD
+    prompt "Camera board pin map"
+    default STREAM_VIDEO_BOARD_GENERIC_ESP32S3
+    help
+        Select the camera pin mapping for your board.
+
+config STREAM_VIDEO_BOARD_GENERIC_ESP32S3
+    bool "ESP32-S3 WROOM (default wiring)"
+
+config STREAM_VIDEO_BOARD_XIAO_ESP32S3_SENSE
+    bool "XIAO ESP32-S3 Sense (OV2640/OV3660)"
+
+endchoice
+
+config STREAM_CODEC_BOARD_TYPE
+    string
+    default "XIAO_ESP32S3_Sense" if STREAM_VIDEO_BOARD_XIAO_ESP32S3_SENSE
+    default "ESP32_S3_N16R8"
+
+config STREAM_VIDEO_USE_FIXED_CAPS
+    bool "Force fixed video caps"
+    default y
+    help
+        When enabled, apply the configured width/height/fps/pixel format
+        to the camera source. Disable to use camera driver defaults.
+
+config STREAM_VIDEO_RUN_RES_TEST
+    bool "Run resolution/encoder test on boot"
+    default n
+    help
+        Runs a short encoder test across common resolutions at boot and
+        then stops. Useful to find stable settings before publishing.
 
 config STREAM_VIDEO_WIDTH
     int "Video width (pixels)"
@@ -61,6 +99,125 @@ config STREAM_VIDEO_BITRATE
     default 800000
     help
         Target H264 bitrate for the capture sink encoder.
+
+config STREAM_AUDIO_ENABLE
+    bool "Enable audio capture/publish"
+    default y
+    help
+        Enable microphone capture and publish audio alongside video.
+
+config STREAM_AUDIO_SAMPLE_RATE
+    int "Audio sample rate (Hz)"
+    range 8000 48000
+    default 16000
+    help
+        Microphone sample rate used by the audio capture source.
+
+config STREAM_AUDIO_CHANNELS
+    int "Audio channel count"
+    range 1 2
+    default 2
+    help
+        Number of audio channels to capture and encode.
+
+config STREAM_AUDIO_BITS_PER_SAMPLE
+    int "Audio bits per sample"
+    range 16 32
+    default 16
+    help
+        Bit depth of audio samples captured from the microphone.
+
+config STREAM_AUDIO_BITRATE
+    int "Audio bitrate (bps)"
+    range 6000 128000
+    default 32000
+    help
+        Target Opus bitrate for the audio encoder.
+
+config STREAM_AUDIO_INPUT_GAIN
+    int "Audio input gain (dB)"
+    range 0 60
+    default 30
+    help
+        Hardware input gain applied to the microphone/codec input.
+
+config STREAM_AUDIO_AGC_ENABLE
+    bool "Enable AGC (ALC) in audio pipeline"
+    default y
+    help
+        Enables automatic level control in the capture pipeline to stabilize
+        voice loudness.
+
+config STREAM_AUDIO_AGC_GAIN_DB
+    int "AGC base gain (dB)"
+    range -12 12
+    default 0
+    depends on STREAM_AUDIO_AGC_ENABLE
+    help
+        Base gain applied by the ALC element. Use negative values to reduce
+        sensitivity and background pickup.
+
+config STREAM_AUDIO_LEVEL_PROBE
+    bool "Probe mic level before publish (debug)"
+    default n
+    help
+        Reads raw mic samples briefly and logs RMS/peak level.
+
+config STREAM_AUDIO_LEVEL_PROBE_MS
+    int "Mic level probe duration (ms)"
+    range 100 3000
+    default 500
+    depends on STREAM_AUDIO_LEVEL_PROBE
+    help
+        Duration of the raw mic level probe in milliseconds.
+
+config STREAM_AUDIO_DEBUG_MONITOR
+    bool "Enable audio frame monitor (debug)"
+    default n
+    help
+        Logs audio frame counts for a few seconds after capture starts.
+
+config STREAM_AUDIO_DUMP_OPUS
+    bool "Dump Opus frames to RAM (debug)"
+    default n
+    help
+        Writes encoded Opus frames to RAM for a short duration.
+        Each frame is stored with a 4-byte length prefix in a byte buffer.
+
+config STREAM_AUDIO_DUMP_SECONDS
+    int "Opus dump duration (seconds)"
+    range 1 300
+    default 30
+    depends on STREAM_AUDIO_DUMP_OPUS
+    help
+        Number of seconds to write Opus frames before stopping the dump.
+
+config STREAM_AUDIO_DUMP_MAX_BYTES
+    int "Opus dump RAM cap (bytes)"
+    range 1024 2097152
+    default 262144
+    depends on STREAM_AUDIO_DUMP_OPUS
+    help
+        Maximum RAM to use for Opus dump buffer before stopping the dump.
+
+choice STREAM_AUDIO_I2S_MODE
+    prompt "Audio I2S mode"
+    default STREAM_AUDIO_I2S_MODE_TDM if IDF_TARGET_ESP32S3
+    default STREAM_AUDIO_I2S_MODE_STD
+    help
+        Select the I2S mode for the audio codec/microphone interface.
+
+config STREAM_AUDIO_I2S_MODE_STD
+    bool "I2S standard"
+    help
+        Use standard I2S framing for microphone capture.
+
+config STREAM_AUDIO_I2S_MODE_TDM
+    bool "I2S TDM"
+    help
+        Use TDM framing for multi-channel microphone capture.
+
+endchoice
 
 choice STREAM_VIDEO_CAMERA_FMT
     prompt "Camera pixel format"

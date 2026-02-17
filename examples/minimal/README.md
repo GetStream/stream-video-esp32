@@ -28,6 +28,51 @@ Before building, edit `main/main.c` and configure:
 #define STREAM_CALL_ID "call123"         // Call ID (or NULL to create new)
 ```
 
+### Audio Capture
+Audio publishing uses the microphone when a supported codec/mic board is present.
+It uses Espressif's `codec_board` component to initialize the audio codec and provide a record handle.
+Use `idf.py menuconfig` and configure:
+- `Stream Video Example → Enable audio capture/publish`
+- `Stream Video Example → Audio sample rate / channel count / bitrate / I2S mode`
+Audio codec board selection follows the camera board pin map to avoid mismatches.
+If you need a different audio board type, add `CONFIG_STREAM_CODEC_BOARD_TYPE="..."`
+to `sdkconfig.defaults` or `sdkconfig`.
+For `XIAO_ESP32S3_Sense`, audio input uses the PDM mic path automatically.
+
+Supported boards from `codec_board` (as of esp-webrtc-solution main):
+- `S3_Korvo_V2`
+- `S3_Korvo_V4`
+- `ESP32_S3_KORVO_2L`
+- `ESP32_KORVO_V1`m
+- `ESP32_LYRAT_V43`
+- `LYRAT_MINI_V1`
+- `ESP32S3_BOX`
+- `ESP32_S3_BOX_3`
+- `ESP32S3_EYE`
+- `ESP32_P4_DEV_V14`
+- `ESP32_P4_EYE`
+- `ESP32_S3_EchoEar`
+- `XIAO_ESP32S3_Sense`
+- `ATOMS3_ECHO_BASE`
+- `XD_AIOT_C3`
+- `ESP_SPOT`
+- `DUMMY_CODEC_BOARD`
+
+If your board is not listed:
+1. Build once so the component is downloaded.
+2. Copy `examples/minimal/managed_components/tempotian__codec_board` to
+   `examples/minimal/components/codec_board`.
+3. Edit `examples/minimal/components/codec_board/board_cfg.txt` and add your board
+   definition (pins + codec type).
+4. Set `CONFIG_STREAM_CODEC_BOARD_TYPE` to your new board name and rebuild.
+
+If you see `Failed to resolve component 'codec_board'` during build:
+- Your ESP-IDF component registry does not have `tempotian/codec_board`.
+- Manually vendor the component by copying it into
+  `examples/minimal/components/codec_board` (from
+  `https://github.com/espressif/esp-webrtc-solution/tree/main/components/codec_board`)
+  and rebuild.
+
 ## Prerequisites
 
 1. **ESP-IDF v5.4 or higher** - Install from [ESP-IDF Getting Started](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/)
@@ -66,18 +111,28 @@ cd examples/minimal
 idf.py set-target esp32s3
 ```
 
-### 4. Build the project
+### 4. Select partition table
+This example defaults to an 8MB layout. For 16MB boards, switch to the
+provided 16MB table:
+```bash
+idf.py menuconfig
+```
+Then set:
+`Partition Table → Partition Table (Custom) → Custom partition table CSV` to
+`partitions_16mb.csv`.
+
+### 5. Build the project
 ```bash
 idf.py build
 ```
 
-### 5. Flash to device
+### 6. Flash to device
 ```bash
 # Connect ESP32-S3 via USB
 idf.py flash
 ```
 
-### 6. Monitor output
+### 7. Monitor output
 ```bash
 idf.py monitor
 ```

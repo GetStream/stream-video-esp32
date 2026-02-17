@@ -9,6 +9,7 @@ extern "C" {
 
 esp_err_t media_publish_start(stream_video_client_handle_t client);
 esp_err_t media_publish_stop(stream_video_client_handle_t client);
+esp_err_t media_publish_run_resolution_test(void);
 
 #ifdef __cplusplus
 }

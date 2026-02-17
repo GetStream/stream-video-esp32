@@ -18,5 +18,6 @@ idf_component_register(
         esp_capture
         esp_video_codec
         esp_audio_codec
+        codec_board
         esp_psram
 )

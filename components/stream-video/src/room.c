@@ -33,6 +33,88 @@ typedef struct stream_video_client {
 #define JOIN_DONE_BIT         BIT1
 #define JOIN_FAILED_BIT       BIT2
 
+static bool url_has_tcp_transport(const char *url)
+{
+    return url && strstr(url, "transport=tcp") != NULL;
+}
+
+static bool url_is_turn(const char *url)
+{
+    return url && strncmp(url, "turn:", 5) == 0;
+}
+
+static bool url_is_turns(const char *url)
+{
+    return url && strncmp(url, "turns:", 6) == 0;
+}
+
+static bool url_is_stun(const char *url)
+{
+    return url && (strncmp(url, "stun:", 5) == 0 || strncmp(url, "stuns:", 6) == 0);
+}
+
+static const char *select_ice_url(cJSON *urls)
+{
+    if (!urls || !cJSON_IsArray(urls)) {
+        return NULL;
+    }
+    int count = cJSON_GetArraySize(urls);
+    if (count <= 0) {
+        return NULL;
+    }
+
+#if defined(CONFIG_STREAM_VIDEO_STUN_ONLY)
+    for (int i = 0; i < count; ++i) {
+        cJSON *url = cJSON_GetArrayItem(urls, i);
+        if (url && cJSON_IsString(url)) {
+            const char *value = url->valuestring;
+            if (url_is_stun(value)) {
+                return value;
+            }
+        }
+    }
+    return NULL;
+#endif
+
+#if defined(CONFIG_STREAM_VIDEO_ALLOW_TCP_TURN)
+    for (int i = 0; i < count; ++i) {
+        cJSON *url = cJSON_GetArrayItem(urls, i);
+        if (url && cJSON_IsString(url)) {
+            const char *value = url->valuestring;
+            if (url_is_turns(value) || (url_is_turn(value) && url_has_tcp_transport(value))) {
+                return value;
+            }
+        }
+    }
+#endif
+
+    for (int i = 0; i < count; ++i) {
+        cJSON *url = cJSON_GetArrayItem(urls, i);
+        if (url && cJSON_IsString(url)) {
+            const char *value = url->valuestring;
+            if (url_is_turn(value) && !url_has_tcp_transport(value)) {
+                return value;
+            }
+        }
+    }
+
+    for (int i = 0; i < count; ++i) {
+        cJSON *url = cJSON_GetArrayItem(urls, i);
+        if (url && cJSON_IsString(url)) {
+            const char *value = url->valuestring;
+            if (url_is_stun(value)) {
+                return value;
+            }
+        }
+    }
+
+    cJSON *first = cJSON_GetArrayItem(urls, 0);
+    if (first && cJSON_IsString(first)) {
+        return first->valuestring;
+    }
+    return NULL;
+}
+
 static size_t parse_ice_servers(const char *ice_json, esp_peer_ice_server_cfg_t **servers_out)
 {
     if (!ice_json || !servers_out) {
@@ -69,12 +151,7 @@ static size_t parse_ice_servers(const char *ice_json, esp_peer_ice_server_cfg_t 
         cJSON *password = cJSON_GetObjectItem(item, "password");
         const char *url_str = NULL;
 
-        if (urls && cJSON_IsArray(urls) && cJSON_GetArraySize(urls) > 0) {
-            cJSON *first_url = cJSON_GetArrayItem(urls, 0);
-            if (first_url && cJSON_IsString(first_url)) {
-                url_str = first_url->valuestring;
-            }
-        }
+        url_str = select_ice_url(urls);
 
         if (!url_str || !username || !password || !cJSON_IsString(username) || !cJSON_IsString(password)) {
             continue;
@@ -83,6 +160,7 @@ static size_t parse_ice_servers(const char *ice_json, esp_peer_ice_server_cfg_t 
         servers[used].stun_url = strdup(url_str);
         servers[used].user = strdup(username->valuestring);
         servers[used].psw = strdup(password->valuestring);
+        ESP_LOGI(TAG, "Selected ICE url[%u]: %s", (unsigned)used, url_str);
         used++;
     }
 
@@ -186,9 +264,21 @@ static stream_video_error_t on_join_call_response(
         if (response->credentials.ice_servers[0]) {
             esp_peer_ice_server_cfg_t *servers = NULL;
             size_t server_count = parse_ice_servers(response->credentials.ice_servers, &servers);
-            if (server_count > 0 && servers) {
 #if defined(CONFIG_STREAM_VIDEO_STUN_OVERRIDE)
-                if (CONFIG_STREAM_VIDEO_STUN_OVERRIDE[0] != '\0') {
+            if (CONFIG_STREAM_VIDEO_STUN_OVERRIDE[0] != '\0') {
+                if (server_count == 0 || !servers) {
+                    servers = (esp_peer_ice_server_cfg_t *)calloc(1, sizeof(esp_peer_ice_server_cfg_t));
+                    if (servers) {
+                        servers[0].stun_url = strdup(CONFIG_STREAM_VIDEO_STUN_OVERRIDE);
+                        servers[0].user = strdup("");
+                        servers[0].psw = strdup("");
+                        server_count = 1;
+                        ESP_LOGI(TAG, "Using STUN override as sole ICE server: %s",
+                                 CONFIG_STREAM_VIDEO_STUN_OVERRIDE);
+                    } else {
+                        ESP_LOGE(TAG, "Failed to allocate STUN override config");
+                    }
+                } else {
                     esp_peer_ice_server_cfg_t *expanded =
                         (esp_peer_ice_server_cfg_t *)calloc(server_count + 1, sizeof(esp_peer_ice_server_cfg_t));
                     if (expanded) {
@@ -213,7 +303,9 @@ static stream_video_error_t on_join_call_response(
                         ESP_LOGE(TAG, "Failed to allocate STUN override config");
                     }
                 }
+            }
 #endif
+            if (server_count > 0 && servers) {
                 for (size_t i = 0; i < server_count; ++i) {
                     ESP_LOGI(TAG, "ICE server[%u]: url=%s user_len=%u",
                              (unsigned)i,
