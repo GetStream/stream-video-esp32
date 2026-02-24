@@ -148,12 +148,6 @@ void app_main(void)
 
 See [docs/api_reference.md](docs/api_reference.md) for complete API documentation.
 
-## Project Status
-
-⚠️ **Developer Preview** - This SDK is currently in development and not ready for production use.
-
-**Known limitations:** WiFi uses exponential backoff in the example; coordinator and SFU have configurable reconnect. The API reference in [docs/api_reference.md](docs/api_reference.md) is incomplete.
-
 ## Security / credentials
 
 WiFi credentials and Stream tokens are not stored in the repository. Set WiFi via `idf.py menuconfig` or by editing `sdkconfig.defaults`; `sdkconfig` is gitignored. Tokens are obtained at runtime from your backend. Do not commit `sdkconfig` or any file containing secrets.
