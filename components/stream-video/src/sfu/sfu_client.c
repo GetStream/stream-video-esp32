@@ -85,6 +85,9 @@ struct stream_sfu_client {
     stream_sfu_state_t state;
     EventGroupHandle_t event_group;
     TaskHandle_t health_task;
+    TaskHandle_t reconnect_task;
+    bool should_reconnect;
+    uint32_t reconnect_attempts;
     TickType_t last_event_tick;
     char join_token[2048];
     char join_session_id[128];
@@ -1154,11 +1157,59 @@ static void sfu_health_monitor_task(void *pvParameters)
                 if (!esp_websocket_client_is_connected(client->ws_client)) {
                     continue;
                 }
-                ESP_LOGW(TAG, "No SFU events for 15s, reconnecting...");
+                ESP_LOGW(TAG, "No SFU events for 15s, triggering reconnect...");
                 esp_websocket_client_stop(client->ws_client);
-                esp_websocket_client_start(client->ws_client);
                 client->last_event_tick = xTaskGetTickCount();
             }
+        }
+    }
+
+    vTaskDelete(NULL);
+}
+
+/**
+ * @brief SFU reconnect task: waits for disconnect then reconnects with backoff
+ */
+static void sfu_reconnect_task(void *pvParameters)
+{
+    stream_sfu_client_handle_t client = (stream_sfu_client_handle_t)pvParameters;
+    const EventBits_t wait_bits = SFU_DISCONNECTED_BIT | SFU_ERROR_BIT;
+    const TickType_t poll_timeout = pdMS_TO_TICKS(500);
+
+    while (client->should_reconnect) {
+        EventBits_t bits = xEventGroupWaitBits(client->event_group, wait_bits,
+                                              false, false, poll_timeout);
+        if (!client->should_reconnect) {
+            break;
+        }
+        if ((bits & wait_bits) == 0) {
+            continue;
+        }
+
+        if (client->config.reconnect_max_attempts > 0 &&
+            client->reconnect_attempts >= client->config.reconnect_max_attempts) {
+            ESP_LOGW(TAG, "SFU max reconnection attempts reached");
+            break;
+        }
+
+        client->reconnect_attempts++;
+        uint32_t interval_ms = client->config.reconnect_interval_ms > 0
+                               ? client->config.reconnect_interval_ms
+                               : 5000;
+        ESP_LOGI(TAG, "SFU reconnecting in %lu ms (attempt %lu)...",
+                 (unsigned long)interval_ms, (unsigned long)client->reconnect_attempts);
+        vTaskDelay(pdMS_TO_TICKS(interval_ms));
+
+        if (!client->should_reconnect) {
+            break;
+        }
+
+        xEventGroupClearBits(client->event_group, wait_bits);
+        client->state = STREAM_SFU_STATE_CONNECTING;
+        esp_err_t err = esp_websocket_client_start(client->ws_client);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "SFU reconnect start failed: %s", esp_err_to_name(err));
+            xEventGroupSetBits(client->event_group, SFU_ERROR_BIT);
         }
     }
 
@@ -2191,6 +2242,7 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
         case WEBSOCKET_EVENT_CONNECTED:
             ESP_LOGI(TAG, "SFU WebSocket connected");
             client->state = STREAM_SFU_STATE_CONNECTED;
+            client->reconnect_attempts = 0;
             client->last_event_tick = xTaskGetTickCount();
             xEventGroupSetBits(client->event_group, SFU_CONNECTED_BIT);
             
@@ -2513,6 +2565,12 @@ stream_video_error_t stream_sfu_client_create(
                                    sfu_websocket_event_handler, client);
 
     client->health_task = NULL;
+    client->reconnect_task = NULL;
+    client->should_reconnect = true;
+    client->reconnect_attempts = 0;
+    if (client->config.reconnect_interval_ms == 0) {
+        client->config.reconnect_interval_ms = 5000;
+    }
     client->last_event_tick = xTaskGetTickCount();
     client->join_token[0] = '\0';
     client->join_session_id[0] = '\0';
@@ -2530,6 +2588,7 @@ stream_video_error_t stream_sfu_client_create(
     client->ice_servers = NULL;
     client->ice_server_count = 0;
     xTaskCreate(sfu_health_monitor_task, "sfu_health", 4096, client, 5, &client->health_task);
+    xTaskCreate(sfu_reconnect_task, "sfu_reconn", 4096, client, 5, &client->reconnect_task);
 
     *client_out = client;
     return STREAM_VIDEO_ERR_OK;
@@ -2541,19 +2600,25 @@ void stream_sfu_client_destroy(stream_sfu_client_handle_t client)
         return;
     }
 
+    client->should_reconnect = false;
+
     // Disconnect if connected
     if (client->ws_client) {
         esp_websocket_client_stop(client->ws_client);
         esp_websocket_client_destroy(client->ws_client);
     }
 
-    // Clean up event group
-    if (client->event_group) {
-        vEventGroupDelete(client->event_group);
+    if (client->reconnect_task) {
+        vTaskDelete(client->reconnect_task);
+        client->reconnect_task = NULL;
     }
-
     if (client->health_task) {
         vTaskDelete(client->health_task);
+    }
+
+    // Clean up event group (after tasks that wait on it are gone)
+    if (client->event_group) {
+        vEventGroupDelete(client->event_group);
     }
 
     if (client->peer) {
@@ -2616,6 +2681,7 @@ void stream_sfu_client_disconnect(stream_sfu_client_handle_t client)
         return;
     }
 
+    client->should_reconnect = false;
     esp_websocket_client_stop(client->ws_client);
     client->state = STREAM_SFU_STATE_DISCONNECTED;
 }

@@ -72,6 +72,8 @@ typedef struct {
     const char *token;                  // SFU token (from joinCall response)
     stream_sfu_event_cb_t event_cb;     // Event callback
     void *user_data;                    // User context
+    uint32_t reconnect_interval_ms;     // Delay between reconnect attempts (0 = default 5000 ms)
+    uint32_t reconnect_max_attempts;    // Max reconnect attempts (0 = infinite)
 } stream_sfu_config_t;
 
 /**

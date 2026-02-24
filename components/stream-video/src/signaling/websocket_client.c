@@ -354,15 +354,15 @@ stream_video_error_t stream_signaling_client_create(
         return STREAM_VIDEO_ERR_NO_MEM;
     }
 
-    // Configure WebSocket client
+    // Configure WebSocket client (ping/pong disabled — server does not support it; keepalive TBD later)
     esp_websocket_client_config_t ws_cfg = {
         .uri = client->signaling_url,
         .reconnect_timeout_ms = 0, // We handle reconnection ourselves
         .crt_bundle_attach = esp_crt_bundle_attach,
         .task_stack = 8192,
         .headers = STREAM_WS_HEADERS,
-        .ping_interval_sec = 30,
-        .pingpong_timeout_sec = 120,
+        .ping_interval_sec = 0,   // Disabled: server does not support ping-pong
+        .pingpong_timeout_sec = 0,
     };
 
     client->ws_client = esp_websocket_client_init(&ws_cfg);

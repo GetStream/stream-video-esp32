@@ -1,5 +1,14 @@
 # API Reference
 
+This API reference is incomplete. More functions will be added as the SDK develops.
+
+## Contents
+
+- [Initialization](#initialization) — `stream_video_init`, `stream_video_deinit`
+- [Error Handling](#error-handling) — `stream_video_error_to_string`, error codes
+- [Types](#types) — client and room handles
+- More sections to come.
+
 ## Initialization
 
 ### stream_video_init
@@ -63,8 +72,5 @@ Opaque handle for Stream Video client.
 
 Opaque handle for Stream Video room.
 
----
-
-**Note:** This API reference is incomplete. More functions will be added as the SDK develops.
 
 

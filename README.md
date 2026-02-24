@@ -1,5 +1,7 @@
 # Stream Video ESP32 SDK
 
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE.txt)
+
 Stream Video SDK for ESP32-S3 - Real-time video, audio, and data for embedded projects.
 
 This SDK provides Stream Video signaling and SFU connectivity on ESP32-S3 with integrated WebRTC and media components for embedded use.
@@ -29,19 +31,6 @@ This SDK uses the following components :
 
 ## Installation
 
-Add this component to your ESP-IDF project:
-
-```bash
-idf.py add-dependency "GetStream/stream-video-esp32=^0.1.0"
-```
-
-Or manually add it to your `idf_component.yml`:
-
-```yaml
-dependencies:
-  GetStream/stream-video-esp32: "^0.1.0"
-```
-
 ## ESP-IDF Setup (macOS)
 
 Step-by-step install for macOS (Apple Silicon or Intel):
@@ -61,6 +50,7 @@ Step-by-step install for macOS (Apple Silicon or Intel):
    cd ~/esp/esp-idf
    ./install.sh esp32s3
    ```
+   
 4. Export the environment (each new terminal):
    ```bash
    . $HOME/esp/esp-idf/export.sh
@@ -74,32 +64,24 @@ Step-by-step install for macOS (Apple Silicon or Intel):
 
 ### Basic Usage
 
-```c
-#include "esp_log.h"
-#include "stream_video.h"
+Add this component to your ESP-IDF project:
 
-static const char *TAG = "app";
+```bash
+idf.py add-dependency "GetStream/stream-video-esp32=^0.1.0"
+```
 
-void app_main(void)
-{
-    // Initialize Stream Video SDK
-    stream_video_error_t err = stream_video_init();
-    if (err != STREAM_VIDEO_ERR_OK) {
-        ESP_LOGE(TAG, "Failed to initialize SDK");
-        return;
-    }
+Or manually add it to your `idf_component.yml`:
 
-    // TODO: Connect to room and publish/subscribe tracks
-}
+```yaml
+dependencies:
+  GetStream/stream-video-esp32: "^0.1.0"
 ```
 
 ## Examples
 
 See the `examples/` directory for complete examples:
 
-- **minimal**: Basic connection with audio
-- **minimal_video**: Audio + video publishing
-- **voice_agent**: AI agent interaction
+- **minimal**: Video publishing example
 
 ### Run the minimal example
 
@@ -132,14 +114,35 @@ See the `examples/` directory for complete examples:
 
 The minimal example ships with defaults in `examples/minimal/sdkconfig.defaults`. These are the starting values before you run `menuconfig`:
 
-- WiFi SSID: `"Pixel8"`
+- WiFi SSID: `"MyWiFi"` (placeholder — set your SSID in `sdkconfig.defaults` or via menuconfig)
 - WiFi password: `""` (empty)
-- Video width/height: `640x480`
-- Video FPS: `25`
-- Video bitrate: `800000`
+- Video width/height: `320x240` (lower resolution for memory; can increase in menuconfig)
+- Video FPS: `20`
+- Video bitrate: `900000`
 - Camera format: `YUV422`
 
-To change WiFi credentials or video quality after the first configure, run `idf.py menuconfig` and edit the settings under `Stream Video Example`. Changes are saved to `sdkconfig` in the example directory and override the defaults.
+To change WiFi credentials or video quality after the first configure, run `idf.py menuconfig` and edit the settings under `Stream Video Example` which is under `Component config`. Changes are saved to `sdkconfig` in the example directory and override the defaults.
+
+```c
+#include "esp_log.h"
+#include "stream_video.h"
+
+static const char *TAG = "app";
+
+void app_main(void)
+{
+    // Initialize Stream Video SDK
+    stream_video_error_t err = stream_video_init();
+    if (err != STREAM_VIDEO_ERR_OK) {
+        ESP_LOGE(TAG, "Failed to initialize SDK");
+        return;
+    }
+
+    // TODO: Connect to room and publish/subscribe tracks
+}
+```
+
+
 
 ## API Reference
 
@@ -149,13 +152,19 @@ See [docs/api_reference.md](docs/api_reference.md) for complete API documentatio
 
 ⚠️ **Developer Preview** - This SDK is currently in development and not ready for production use.
 
+**Known limitations:** WiFi uses exponential backoff in the example; coordinator and SFU have configurable reconnect. The API reference in [docs/api_reference.md](docs/api_reference.md) is incomplete.
+
+## Security / credentials
+
+WiFi credentials and Stream tokens are not stored in the repository. Set WiFi via `idf.py menuconfig` or by editing `sdkconfig.defaults`; `sdkconfig` is gitignored. Tokens are obtained at runtime from your backend. Do not commit `sdkconfig` or any file containing secrets.
+
 ## License
 
-Apache-2.0
+[Apache-2.0](LICENSE.txt)
 
 ## Contributing
 
-Contributions are welcome! Please see our contributing guidelines.
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Links
 

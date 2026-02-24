@@ -54,12 +54,7 @@ python3 --version
 
 ### 1. Configure WiFi
 
-Edit `main/main.c` and set your WiFi credentials:
-
-```c
-#define WIFI_SSID "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
-```
+Set WiFi in `sdkconfig.defaults` (e.g. `CONFIG_STREAM_VIDEO_WIFI_SSID="MyWiFi"`) or run `idf.py menuconfig` and go to **Stream Video Example**. The example reads credentials from Kconfig.
 
 ### 2. Configure Stream Settings
 
@@ -87,7 +82,7 @@ GET https://pronto.getstream.io/api/auth/create-token?environment=xxx&user_id=xx
 ### 1. Navigate to Example Directory
 
 ```bash
-cd /Users/pratimmallick/Projects/Stream/stream-video-esp32/examples/minimal
+cd examples/minimal
 ```
 
 ### 2. Set Target Chip

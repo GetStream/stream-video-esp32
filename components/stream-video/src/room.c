@@ -248,6 +248,8 @@ static stream_video_error_t on_join_call_response(
             .token = response->credentials.token,
             .event_cb = on_sfu_event,
             .user_data = client,
+            .reconnect_interval_ms = 5000,
+            .reconnect_max_attempts = 10,
         };
 
         stream_video_error_t err = stream_sfu_client_create(&sfu_config, &client->sfu_client);

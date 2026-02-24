@@ -2,6 +2,17 @@
 
 This document explains the authentication flow that matches the Stream Android SDK demo app.
 
+## Auth base URL
+
+The SDK uses a default auth base URL to request tokens. This is the **demo/default** backend; you can run your own backend that implements the same endpoint.
+
+**Where it is defined:**
+
+- `components/stream-video/include/stream_video_token.h`: `STREAM_VIDEO_DEFAULT_BASE_URL` (host only, e.g. `pronto.getstream.io`)
+- `components/stream-video/src/auth/auth_client.c`: `AUTH_BASE_URL` (full URL, e.g. `https://pronto.getstream.io/`)
+
+**How to change it:** Today the base URL is hardcoded. To use your own auth server, edit both of the above so the host and URL match your backend. The auth endpoint path is `/api/auth/create-token` with query parameters `environment`, `user_id`, and `exp`. Future versions may make this configurable via Kconfig.
+
 ## Configuration Values (from Android Demo App)
 
 ### Token Expiry

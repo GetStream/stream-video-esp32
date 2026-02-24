@@ -9,24 +9,14 @@ This example demonstrates the complete flow matching the Android demo app:
 
 ## Configuration
 
-Before building, edit `main/main.c` and configure:
+**WiFi:** Set SSID and password in `sdkconfig.defaults` (e.g. `CONFIG_STREAM_VIDEO_WIFI_SSID="MyWiFi"`) or run `idf.py menuconfig` and go to **Stream Video Example**. The example reads these from Kconfig; do not hardcode credentials in source.
 
-### WiFi Credentials
-```c
-#define WIFI_SSID "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
-```
+**Stream (environment, user, call):** Edit `main/main.c` and set:
 
-### Stream Configuration
-```c
-// User and Environment Selection
-#define STREAM_ENVIRONMENT "production"  // "production", "staging", or "development"
-#define STREAM_USER_ID "user123"         // User ID (or NULL for auto-generated)
-
-// Call Selection
-#define STREAM_CALL_TYPE "default"       // Call type (e.g., "default", "livestream")
-#define STREAM_CALL_ID "call123"         // Call ID (or NULL to create new)
-```
+- `STREAM_ENVIRONMENT` — e.g. `"production"`, `"staging"`, or `"development"`
+- `STREAM_USER_ID` — user ID for auth (or `NULL` for auto-generated)
+- `STREAM_CALL_TYPE` — e.g. `"default"`, `"livestream"`
+- `STREAM_CALL_ID` — call ID to join, or `NULL` to create a new call
 
 ### Audio Capture
 Audio publishing uses the microphone when a supported codec/mic board is present.
@@ -77,7 +67,7 @@ If you see `Failed to resolve component 'codec_board'` during build:
 
 1. **ESP-IDF v5.4 or higher** - Install from [ESP-IDF Getting Started](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/)
 
-2. **Backend Server** - You need a backend that implements:
+2. **Backend Server** - You need a backend that implements the auth endpoint. The SDK uses the default auth base URL (see [Auth base URL](../../docs/auth_flow.md#auth-base-url) in the docs). Example:
    ```
    GET https://pronto.getstream.io/api/auth/create-token?environment=xxx&user_id=xxx&exp=xxx
    ```
@@ -91,6 +81,8 @@ If you see `Failed to resolve component 'codec_board'` during build:
    ```
 
 ## Building and Flashing
+
+For a detailed step-by-step (including Windows and partition tables), see [BUILD_INSTRUCTIONS.md](BUILD_INSTRUCTIONS.md). Summary:
 
 ### 1. Set up ESP-IDF environment
 ```bash
@@ -149,11 +141,11 @@ I (1234) main: Configuration:
 I (1234) main:   Environment: production
 I (1234) main:   User ID: user123
 I (1234) main:   Call Type: default
-I (1234) main:   Call ID: call123
+I (1234) main:   Call ID: your-call-id
 I (1234) main: ========================================
 I (1234) main: ✓ NVS initialized
 I (1234) main: ✓ Stream Video SDK initialized
-I (1234) main: WiFi initialized, connecting to YOUR_WIFI_SSID...
+I (1234) main: WiFi initialized, connecting to MyWiFi...
 I (2345) main: Got IP: 192.168.1.100
 I (2345) main: WiFi connected, starting Stream Video flow...
 I (2345) main: ✓ Auth data received
@@ -162,9 +154,9 @@ I (2345) main:   API Key: my-app:abc123
 I (2345) main: Connecting to coordinator WebSocket...
 I (3456) main: ✓ Connected to coordinator WebSocket
 I (3456) main: Sending connect message to coordinator...
-I (3456) main: Joining call: type=default, id=call123
+I (3456) main: Joining call: type=default, id=your-call-id
 I (4567) main: ✓ Join call successful
-I (4567) main:   Call ID: call123
+I (4567) main:   Call ID: your-call-id
 I (4567) main:   SFU WebSocket: wss://sfu-123.getstream.io/video/ws
 I (4567) main: ✓ Connecting to SFU WebSocket...
 I (5678) main: ✓ Connected to SFU WebSocket
@@ -174,13 +166,13 @@ I (5678) main: Ready for WebRTC negotiation
 ## Troubleshooting
 
 ### WiFi Connection Issues
-- Check `WIFI_SSID` and `WIFI_PASSWORD` are correct
+- Set WiFi in `idf.py menuconfig` (Stream Video Example) or in `sdkconfig.defaults`; ensure SSID and password are correct
 - Ensure ESP32-S3 is in range of WiFi network
 - Check WiFi router supports 2.4GHz (ESP32-S3 doesn't support 5GHz)
 
 ### Auth Request Fails
 - Ensure backend server is running and accessible
-- Check backend URL is correct: `https://pronto.getstream.io/api/auth/create-token`
+- The auth base URL is configured in the SDK (default: `pronto.getstream.io`). See [Auth base URL](../../docs/auth_flow.md#auth-base-url) for where it is defined and how to change it.
 - Verify backend returns correct JSON format
 
 ### Coordinator Connection Fails
@@ -195,11 +187,11 @@ I (5678) main: Ready for WebRTC negotiation
 
 ## Next Steps
 
-After successful connection:
-- [ ] Implement WebRTC negotiation (SDP/ICE exchange)
-- [ ] Add media capture (audio/video)
-- [ ] Add media rendering (remote audio/video)
-- [ ] Implement track publish/subscribe
+This example already implements auth, coordinator and SFU connection, join call, and audio/video publishing. Optional improvements:
+
+- Improve networking and reconnects as needed
+- Add remote media rendering (subscribe to and display remote tracks)
+- Extend WebRTC negotiation or data channels as needed
 
 ## See Also
 

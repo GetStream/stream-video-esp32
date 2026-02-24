@@ -6,7 +6,6 @@ idf_component_register(
         "src/signaling/message_handler.c"
         "src/sfu/sfu_client.c"
         "src/sfu/sfu_protocol.c"
-        "src/sfu/connection_manager.c"
         "src/webrtc/peer_connection.c"
         "src/webrtc/media_track.c"
         "src/webrtc/sdp_handler.c"
