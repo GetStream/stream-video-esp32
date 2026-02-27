@@ -77,6 +77,67 @@ Ensure you have a backend server running that implements:
 GET https://pronto.getstream.io/api/auth/create-token?environment=xxx&user_id=xxx&exp=xxx
 ```
 
+## Menuconfig reference (Stream Video Example)
+
+Run `idf.py menuconfig` and open the top-level **Stream Video Example** menu. Below is a snapshot of the options and what to tweak.
+
+### Menu snapshot
+
+```
+Stream Video Example
+├── WiFi SSID                          [string]
+├── WiFi password                      [string]
+├── STUN server override               [string]  (empty = use SFU list)
+├── Allow TURN over TCP/TLS            [n/y]
+├── Use STUN only (ignore TURN)        [n/y]
+├── Video encoder task stack size      [32768–262144]
+├── Camera board pin map               (ESP32-S3 WROOM | XIAO ESP32-S3 Sense)
+├── Force fixed video caps             [y/n]
+├── Run resolution/encoder test on boot [n/y]
+├── Video width (pixels)               [160–1920]
+├── Video height (pixels)              [120–1080]
+├── Video frame rate (fps)             [1–30]
+├── Video bitrate (bps)                [50000–5000000]
+├── Enable audio capture/publish       [y/n]
+├── Audio sample rate (Hz)             [8000–48000]
+├── Audio channel count                [1–2]
+├── Audio bits per sample              [16–32]
+├── Audio bitrate (bps)                [6000–128000]
+├── Audio input gain (dB)               [0–60]
+├── Enable AGC (ALC)                   [y/n]
+├── AGC base gain (dB)                 [-12–12]
+├── (debug) Probe mic level            [n/y]
+├── (debug) Audio frame monitor        [n/y]
+├── (debug) Dump Opus frames to RAM    [n/y]
+├── Audio I2S mode                     (I2S standard | I2S TDM)
+└── Camera pixel format                (YUV422 | YUV420)
+
+Component config → Stream Video SDK
+├── Join flow task stack size          [4096–32768]
+└── Video encoder task stack size     [16384–131072]  (SDK default)
+```
+
+### Options worth tweaking
+
+| Area | Option | What it does |
+|------|--------|--------------|
+| **WiFi** | WiFi SSID / WiFi password | Your network. Set here or in `sdkconfig.defaults`. |
+| **ICE/connectivity** | STUN server override | Leave **empty** to use SFU-provided ICE servers. Set e.g. `stun:stun.l.google.com:19302` to force a single STUN for testing. |
+| | Use STUN only | Enable if TURN causes issues; uses only STUN from the SFU list. |
+| | Allow TURN over TCP/TLS | Enable if your network blocks UDP; tries TCP/TLS TURN when offered. |
+| **Board** | Camera board pin map | **ESP32-S3 WROOM** for generic wiring; **XIAO ESP32-S3 Sense** for that board. |
+| **Video** | Video width / height / fps | Resolution and frame rate. Lower (e.g. 320×240, 15 fps) saves CPU and bandwidth. |
+| | Video bitrate (bps) | H.264 target bitrate. 500k–1M is typical; increase for higher quality. |
+| | Video encoder task stack size | Increase (e.g. 131072) if the encoder task overflows. |
+| **Audio** | Enable audio capture/publish | Turn off to publish video only. |
+| | Audio sample rate / bitrate | 16 kHz is typical for voice; 32 kbps Opus is usually enough. |
+| | Audio input gain | Mic gain (dB). Increase if audio is too quiet. |
+| | Enable AGC (ALC) | Keeps voice level stable; disable if it causes artifacts. |
+| **Debug** | Run resolution/encoder test on boot | Runs a short encoder test at boot then stops; use to find stable resolution/caps. |
+| | Probe mic level / Audio frame monitor / Dump Opus | Debug-only; leave off unless diagnosing audio. |
+
+Settings are stored in `sdkconfig` in the example directory (do not commit if it contains secrets).
+
 ## Build Steps
 
 **Note:** Pre-generated protobuf sources (`components/stream-video-protobuf/generated/`) are committed in the repo, so you can clone and build without installing `protoc` or nanopb. If you change any `.proto` files, you need `protoc` and `pip install nanopb` to regenerate those files and then commit the updated `generated/` directory.
