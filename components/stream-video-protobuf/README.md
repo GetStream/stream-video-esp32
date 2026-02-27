@@ -12,11 +12,9 @@ The proto files are located in `../stream-video/proto/`:
 
 ## Code Generation
 
-The proto files need to be compiled to C code using nanopb. This can be done:
+**Pre-generated sources are committed** in `generated/`, so a normal clone-and-build works without any extra tools. You only need to regenerate if you change the `.proto` files.
 
-1. **Manually** using protoc and nanopb generator
-2. **Via build script** (to be implemented)
-3. **Via CMake custom command** (to be implemented)
+To regenerate (e.g. after editing `.proto` files), install `protoc` and `pip install nanopb`, then either run CMake (it will generate if the files are missing) or run manually:
 
 ### Manual Generation
 

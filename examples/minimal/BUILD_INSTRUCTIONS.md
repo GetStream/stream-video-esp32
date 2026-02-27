@@ -79,6 +79,8 @@ GET https://pronto.getstream.io/api/auth/create-token?environment=xxx&user_id=xx
 
 ## Build Steps
 
+**Note:** Pre-generated protobuf sources (`components/stream-video-protobuf/generated/`) are committed in the repo, so you can clone and build without installing `protoc` or nanopb. If you change any `.proto` files, you need `protoc` and `pip install nanopb` to regenerate those files and then commit the updated `generated/` directory.
+
 ### 1. Navigate to Example Directory
 
 ```bash

@@ -16,8 +16,7 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Generated files
-components/stream-video-protobuf/generated/*
+# Generated files (stream-video-protobuf/generated/ is committed so fresh clone builds without protoc)
 examples/minimal/managed_components/
 
 # Local temp checkouts

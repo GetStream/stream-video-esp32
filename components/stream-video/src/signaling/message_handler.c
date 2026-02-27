@@ -224,7 +224,8 @@ void stream_signaling_handle_message(
             handle_track_subscribed_event(client, json);
         } else if (strcmp(type_str, "participant_joined") == 0) {
             handle_participant_joined_event(client, json);
-        } else if (strcmp(type_str, "participant_left") == 0) {
+        } else if (strcmp(type_str, "participant_left") == 0 ||
+                   strcmp(type_str, "call.session_participant_left") == 0) {
             handle_participant_left_event(client, json);
         } else if (strcmp(type_str, "error") == 0) {
             handle_error_response(client, json);

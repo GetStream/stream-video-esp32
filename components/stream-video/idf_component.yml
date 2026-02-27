@@ -11,5 +11,8 @@ dependencies:
   # WebSocket client (required for signaling)
   espressif/esp_websocket_client: "^1.6.1"
   
+  # JSON (cJSON) - required for signaling message parsing
+  espressif/cjson: "*"
+  
   # Protobuf implementation (using LiveKit's nanopb from registry)
   livekit/nanopb: "^0.4.9"

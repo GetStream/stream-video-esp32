@@ -10,6 +10,7 @@ dependencies:
   espressif/esp_peer: "^1.2.7"
   espressif/esp_capture: "*"
   espressif/esp_websocket_client: "^1.6.1"
+  espressif/cjson: "*"
   livekit/nanopb: "^0.4.9"
   # Note: av_render and media_lib_os might be part of ESP-IDF or need manual installation
   # espressif/av_render: "*"
