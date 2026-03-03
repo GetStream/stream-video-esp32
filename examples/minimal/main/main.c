@@ -29,9 +29,9 @@
 #include "lwip/netdb.h"
 #include "lwip/inet.h"
 #include "stream_video.h"
+#include "stream_video_capture.h"
 #include "sdkconfig.h"
 #include "stream_video_token.h"
-#include "media_publish.h"
 
 static const char *TAG = "main";
 
@@ -66,7 +66,6 @@ static bool g_flow_started = false;
 static TaskHandle_t g_flow_task = NULL;
 static bool g_join_complete = false;
 static bool g_join_success = false;
-static bool g_publish_started = false;
 
 static void wifi_reconnect_timer_cb(void *arg)
 {
@@ -192,31 +191,6 @@ static void on_join_result(const stream_video_join_result_t *result, void *user_
     }
 }
 
-static void publish_task(void *arg)
-{
-    stream_video_client_handle_t client = (stream_video_client_handle_t)arg;
-    esp_err_t pub_err = media_publish_start(client);
-    if (pub_err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start media publishing");
-        g_publish_started = false;
-    }
-    vTaskDelete(NULL);
-}
-
-static void on_sfu_connected(stream_video_client_handle_t client, void *user_data)
-{
-    (void)user_data;
-    if (g_publish_started) {
-        return;
-    }
-    g_publish_started = true;
-    ESP_LOGI(TAG, "SFU connected, starting media publishing");
-    if (xTaskCreate(publish_task, "media_publish", 8192, client, 5, NULL) != pdPASS) {
-        g_publish_started = false;
-        ESP_LOGE(TAG, "Failed to create media_publish task");
-    }
-}
-
 // Forward declarations
 static void stream_flow_task(void *arg);
 static esp_err_t sync_time(void);
@@ -289,8 +263,9 @@ static void stream_flow_task(void *arg)
         .location = NULL,
         .result_cb = on_join_result,
         .user_data = NULL,
-        .sfu_connected_cb = on_sfu_connected,
-        .sfu_user_data = NULL,
+        .sink = NULL,
+        .mute_audio = false,
+        .mute_video = false,
     };
 
     stream_video_error_t err = stream_video_join_call(&params, &g_client);
@@ -416,7 +391,7 @@ void app_main(void)
 
 #if defined(CONFIG_STREAM_VIDEO_RUN_RES_TEST)
     ESP_LOGI(TAG, "Running resolution test; streaming is disabled.");
-    media_publish_run_resolution_test();
+    stream_video_default_capture_run_resolution_test();
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -438,6 +413,10 @@ void app_main(void)
         return;
     }
     ESP_LOGI(TAG, "✓ Stream Video SDK initialized");
+
+    // Use SDK default capture (ESP32-S3/P4); SDK will prepare/stop when needed
+    stream_video_set_capture_provider(stream_video_default_capture_prepare,
+                                      stream_video_default_capture_stop, NULL);
 
     // Initialize WiFi (this will trigger auth request when WiFi is ready)
     wifi_init();

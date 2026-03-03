@@ -1785,6 +1785,10 @@ static int peer_state_handler_common(esp_peer_state_t state, void *ctx, const ch
 
 static int peer_state_handler_pub(esp_peer_state_t state, void *ctx)
 {
+    if (state == ESP_PEER_STATE_CONNECT_FAILED) {
+        ESP_LOGW(TAG, "Publisher CONNECT_FAILED: ICE could not establish. "
+                 "Try without CONFIG_STREAM_VIDEO_STUN_ONLY to use TURN relay, or check firewall/NAT.");
+    }
     return peer_state_handler_common(state, ctx, "Publisher");
 }
 
@@ -2440,6 +2444,9 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
                                              (unsigned)client->publish_options[i].height,
                                              (unsigned)client->publish_options[i].fps);
                                 }
+                            }
+                            if (client->config.on_join_response) {
+                                client->config.on_join_response(client, client->config.user_data);
                             }
                             break;
                         case stream_video_sfu_SfuEvent_change_publish_options_tag:

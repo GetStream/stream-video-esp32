@@ -65,6 +65,15 @@ typedef void (*stream_sfu_event_cb_t)(
 );
 
 /**
+ * @brief Callback when SFU join response is received (participant registered).
+ * Call stream_sfu_client_start_publishing() from here so SetPublisher runs after the SFU knows the participant.
+ */
+typedef void (*stream_sfu_join_response_cb_t)(
+    stream_sfu_client_handle_t client,
+    void *user_data
+);
+
+/**
  * @brief SFU client configuration
  */
 typedef struct {
@@ -72,6 +81,7 @@ typedef struct {
     const char *token;                  // SFU token (from joinCall response)
     stream_sfu_event_cb_t event_cb;     // Event callback
     void *user_data;                    // User context
+    stream_sfu_join_response_cb_t on_join_response;  // Optional: called when join response received (start publishing here)
     uint32_t reconnect_interval_ms;     // Delay between reconnect attempts (0 = default 5000 ms)
     uint32_t reconnect_max_attempts;    // Max reconnect attempts (0 = infinite)
 } stream_sfu_config_t;

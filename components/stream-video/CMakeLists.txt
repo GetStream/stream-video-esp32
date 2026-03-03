@@ -17,7 +17,6 @@ idf_component_register(
         "src/utils/http_client.c"
         "src/auth/auth_client.c"
         "src/coordinator/coordinator_client.c"
-        "src/sfu/sfu_client.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

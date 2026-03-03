@@ -26,7 +26,14 @@ typedef struct stream_video_client {
     stream_video_join_call_params_t params;
     EventGroupHandle_t event_group;
     TaskHandle_t join_task;
+    bool sink_from_provider;  // true if sink was obtained via capture provider
+    esp_capture_sink_handle_t pending_publish_sink;  // sink prepared on SFU connect; start_publishing uses it after join response
 } stream_video_client_t;
+
+// Capture provider (optional): SDK calls when it needs a sink / on leave
+static stream_video_capture_prepare_cb_t s_capture_prepare_cb;
+static stream_video_capture_stop_cb_t s_capture_stop_cb;
+static void *s_capture_provider_user_data;
 
 // Event bits
 #define JOIN_AUTH_DONE_BIT    BIT0
@@ -149,17 +156,22 @@ static size_t parse_ice_servers(const char *ice_json, esp_peer_ice_server_cfg_t 
         cJSON *urls = cJSON_GetObjectItem(item, "urls");
         cJSON *username = cJSON_GetObjectItem(item, "username");
         cJSON *password = cJSON_GetObjectItem(item, "password");
+        cJSON *credential = cJSON_GetObjectItem(item, "credential");
         const char *url_str = NULL;
 
         url_str = select_ice_url(urls);
-
-        if (!url_str || !username || !password || !cJSON_IsString(username) || !cJSON_IsString(password)) {
+        if (!url_str) {
             continue;
         }
 
+        /* STUN has no credentials; TURN uses username + password/credential (RTCIceServer uses "credential") */
+        const char *user_str = (username && cJSON_IsString(username)) ? username->valuestring : "";
+        const char *psw_str = (password && cJSON_IsString(password)) ? password->valuestring :
+                             (credential && cJSON_IsString(credential)) ? credential->valuestring : "";
+
         servers[used].stun_url = strdup(url_str);
-        servers[used].user = strdup(username->valuestring);
-        servers[used].psw = strdup(password->valuestring);
+        servers[used].user = strdup(user_str);
+        servers[used].psw = strdup(psw_str);
         ESP_LOGI(TAG, "Selected ICE url[%u]: %s", (unsigned)used, url_str);
         used++;
     }
@@ -193,6 +205,30 @@ static void publish_join_result(stream_video_client_t *client,
     client->params.result_cb(&result, client->params.user_data);
 }
 
+static void on_sfu_join_response(stream_sfu_client_handle_t sfu_client, void *user_data)
+{
+    stream_video_client_t *client = (stream_video_client_t *)user_data;
+    if (!client || client->sfu_client != sfu_client || !client->pending_publish_sink) {
+        return;
+    }
+    stream_video_error_t err = stream_sfu_client_start_publishing(
+        client->sfu_client,
+        client->pending_publish_sink,
+        !client->params.mute_audio,
+        !client->params.mute_video);
+    if (err != STREAM_VIDEO_ERR_OK) {
+        ESP_LOGE(TAG, "Failed to start publishing after join response: %d", err);
+        if (client->sink_from_provider && s_capture_stop_cb) {
+            s_capture_stop_cb(s_capture_provider_user_data);
+            client->sink_from_provider = false;
+        }
+    } else {
+        ESP_LOGI(TAG, "Publishing started (audio=%d video=%d)",
+                 !client->params.mute_audio, !client->params.mute_video);
+    }
+    client->pending_publish_sink = NULL;
+}
+
 static void on_sfu_event(stream_sfu_client_handle_t client,
                          const stream_sfu_event_t *event,
                          void *user_data)
@@ -210,8 +246,22 @@ static void on_sfu_event(stream_sfu_client_handle_t client,
             ESP_LOGI(TAG, "Ready for WebRTC negotiation");
             if (user_data) {
                 stream_video_client_t *client = (stream_video_client_t *)user_data;
-                if (client->params.sfu_connected_cb) {
-                    client->params.sfu_connected_cb(client, client->params.sfu_user_data);
+                esp_capture_sink_handle_t sink = client->params.sink;
+                client->sink_from_provider = false;
+                client->pending_publish_sink = NULL;
+
+                if (!sink && s_capture_prepare_cb && (!client->params.mute_audio || !client->params.mute_video)) {
+                    stream_video_error_t prep_err = s_capture_prepare_cb(s_capture_provider_user_data, &sink);
+                    if (prep_err == STREAM_VIDEO_ERR_OK && sink) {
+                        client->sink_from_provider = true;
+                    } else if (prep_err != STREAM_VIDEO_ERR_OK) {
+                        ESP_LOGE(TAG, "Capture provider prepare failed: %d", prep_err);
+                    }
+                }
+
+                if (sink) {
+                    client->pending_publish_sink = sink;
+                    ESP_LOGI(TAG, "Capture prepared; will start publishing after SFU join response");
                 }
             }
             break;
@@ -248,6 +298,7 @@ static stream_video_error_t on_join_call_response(
             .token = response->credentials.token,
             .event_cb = on_sfu_event,
             .user_data = client,
+            .on_join_response = on_sfu_join_response,
             .reconnect_interval_ms = 5000,
             .reconnect_max_attempts = 10,
         };
@@ -509,7 +560,20 @@ static void join_flow_task(void *arg)
 stream_video_error_t stream_video_init(void)
 {
     ESP_LOGI(TAG, "Stream Video SDK initialized");
+    s_capture_prepare_cb = NULL;
+    s_capture_stop_cb = NULL;
+    s_capture_provider_user_data = NULL;
     return STREAM_VIDEO_ERR_OK;
+}
+
+void stream_video_set_capture_provider(
+    stream_video_capture_prepare_cb_t prepare_cb,
+    stream_video_capture_stop_cb_t stop_cb,
+    void *user_data)
+{
+    s_capture_prepare_cb = prepare_cb;
+    s_capture_stop_cb = stop_cb;
+    s_capture_provider_user_data = user_data;
 }
 
 void stream_video_deinit(void)
@@ -562,8 +626,13 @@ stream_video_error_t stream_video_leave_call(stream_video_client_handle_t client
     }
 
     if (client->sfu_client) {
+        stream_sfu_client_stop_publishing(client->sfu_client);
         stream_sfu_client_destroy(client->sfu_client);
         client->sfu_client = NULL;
+    }
+    if (client->sink_from_provider && s_capture_stop_cb) {
+        s_capture_stop_cb(s_capture_provider_user_data);
+        client->sink_from_provider = false;
     }
     if (client->coordinator_client) {
         stream_signaling_client_destroy(client->coordinator_client);
@@ -578,27 +647,4 @@ stream_video_error_t stream_video_leave_call(stream_video_client_handle_t client
     return STREAM_VIDEO_ERR_OK;
 }
 
-stream_video_error_t stream_video_start_publishing(
-    stream_video_client_handle_t client_handle,
-    const stream_video_publish_params_t *params)
-{
-    stream_video_client_t *client = (stream_video_client_t *)client_handle;
-    if (!client || !params || !client->sfu_client || !params->sink) {
-        return STREAM_VIDEO_ERR_INVALID_ARG;
-    }
-    return stream_sfu_client_start_publishing(
-        client->sfu_client,
-        params->sink,
-        params->publish_audio,
-        params->publish_video);
-}
-
-stream_video_error_t stream_video_stop_publishing(stream_video_client_handle_t client_handle)
-{
-    stream_video_client_t *client = (stream_video_client_t *)client_handle;
-    if (!client || !client->sfu_client) {
-        return STREAM_VIDEO_ERR_INVALID_ARG;
-    }
-    return stream_sfu_client_stop_publishing(client->sfu_client);
-}
 

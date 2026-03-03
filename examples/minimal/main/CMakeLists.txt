@@ -1,12 +1,12 @@
 idf_component_register(
     SRCS
         "main.c"
-        "media_publish.c"
         "udp_trace.c"
     INCLUDE_DIRS
         "."
     REQUIRES
         stream-video
+        stream-video-capture-default
         nvs_flash
         esp_wifi
         esp_netif

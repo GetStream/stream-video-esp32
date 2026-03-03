@@ -1,8 +1,16 @@
 /**
  * @file stream_video.h
  * @brief Stream Video SDK for ESP32 - Main public API
- * 
+ *
  * This SDK provides real-time video, audio, and data capabilities for ESP32-S3 devices.
+ *
+ * **Capture sink and publishing**
+ * The SDK sends (publishes) your audio/video to the call by reading encoded frames from
+ * a "capture sink". In the ESP capture framework, the pipeline is: sources (camera, mic)
+ * -> capture/encode -> sink. The sink is the output handle from which the SDK acquires
+ * H264/Opus frames and sends them over WebRTC. So "sink" is the source of media for
+ * publishing. You can either pass a sink in join params (after preparing capture yourself)
+ * or register a capture provider so the SDK prepares capture when needed.
  */
 
 #ifndef STREAM_VIDEO_H
@@ -52,13 +60,32 @@ typedef void (*stream_video_join_result_cb_t)(
     void *user_data
 );
 
-typedef void (*stream_video_sfu_connected_cb_t)(
-    stream_video_client_handle_t client,
-    void *user_data
+/**
+ * @brief Capture provider: prepare capture and return sink (SDK calls when needed)
+ * @param user_data User context passed to stream_video_set_capture_provider
+ * @param sink_out  On success, set to the capture sink handle
+ * @return stream_video_error_t STREAM_VIDEO_ERR_OK on success
+ */
+typedef stream_video_error_t (*stream_video_capture_prepare_cb_t)(
+    void *user_data,
+    esp_capture_sink_handle_t *sink_out
 );
 
 /**
+ * @brief Capture provider: stop capture and release resources (SDK calls on leave)
+ * @param user_data User context passed to stream_video_set_capture_provider
+ */
+typedef void (*stream_video_capture_stop_cb_t)(void *user_data);
+
+/**
  * @brief Parameters for joining a call (SDK-managed flow)
+ *
+ * Publishing starts automatically when the SFU is connected. The SDK needs a
+ * capture sink to read encoded frames from. You can either:
+ * - Pass \p sink in the params (you prepare capture before join), or
+ * - Register a capture provider with stream_video_set_capture_provider(); then
+ *   leave \p sink NULL and the SDK will call the provider when it needs a sink.
+ * If \p sink is NULL and no provider is set, no media is published (receive-only).
  */
 typedef struct {
     const char *environment;   // Environment name (e.g., "production", "staging")
@@ -70,27 +97,36 @@ typedef struct {
     const char *location;      // Optional: Location hint (NULL = auto)
     stream_video_join_result_cb_t result_cb; // Result callback (optional)
     void *user_data;           // User context for callback
-    stream_video_sfu_connected_cb_t sfu_connected_cb; // SFU connected callback (optional)
-    void *sfu_user_data;       // User context for SFU callback
+    esp_capture_sink_handle_t sink;  // Optional: capture sink (NULL = use provider or no publish)
+    bool mute_audio;           // If true, do not publish audio
+    bool mute_video;           // If true, do not publish video
 } stream_video_join_call_params_t;
 
 /**
- * @brief Parameters for publishing media from esp_capture
- */
-typedef struct {
-    esp_capture_sink_handle_t sink;
-    bool publish_audio;
-    bool publish_video;
-} stream_video_publish_params_t;
-
-/**
  * @brief Initialize Stream Video SDK
- * 
+ *
  * This must be called before using any other Stream Video SDK functions.
- * 
+ *
  * @return stream_video_error_t Error code
  */
 stream_video_error_t stream_video_init(void);
+
+/**
+ * @brief Register optional capture provider so the SDK prepares capture when needed
+ *
+ * If set, the SDK will call \p prepare_cb when it needs a sink for publishing
+ * (during join, when SFU is connected), and \p stop_cb when leaving the call.
+ * The app then only needs to call join/leave with mute flags; no need to prepare
+ * capture or pass a sink. Pass NULL for both to clear the provider.
+ *
+ * @param prepare_cb Called when SDK needs a sink; set *sink_out and return OK
+ * @param stop_cb    Called when leaving the call to release capture
+ * @param user_data  Passed to both callbacks
+ */
+void stream_video_set_capture_provider(
+    stream_video_capture_prepare_cb_t prepare_cb,
+    stream_video_capture_stop_cb_t stop_cb,
+    void *user_data);
 
 /**
  * @brief Deinitialize Stream Video SDK
@@ -125,25 +161,6 @@ stream_video_error_t stream_video_join_call(
  * @return stream_video_error_t Error code
  */
 stream_video_error_t stream_video_leave_call(stream_video_client_handle_t client);
-
-/**
- * @brief Start publishing audio/video to the SFU
- */
-stream_video_error_t stream_video_start_publishing(
-    stream_video_client_handle_t client,
-    const stream_video_publish_params_t *params);
-
-/**
- * @brief Wait until the SFU WebSocket is connected
- *
- * @param client Client handle from stream_video_join_call
- * @param timeout_ms Timeout in milliseconds
- * @return stream_video_error_t Error code
- */
-/**
- * @brief Stop publishing audio/video
- */
-stream_video_error_t stream_video_stop_publishing(stream_video_client_handle_t client);
 
 #ifdef __cplusplus
 }

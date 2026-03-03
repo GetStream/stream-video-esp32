@@ -1,4 +1,5 @@
-#include "media_publish.h"
+#include "stream_video_capture.h"
+#include "stream_video.h"
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include <inttypes.h>
@@ -95,7 +96,7 @@
 #define HAVE_CODEC_INIT 0
 #endif
 
-static const char *TAG = "media_publish";
+static const char *TAG = "stream_video_capture";
 
 
 static esp_capture_handle_t s_capture = NULL;
@@ -536,7 +537,7 @@ static esp_capture_video_src_if_t *create_camera_source(void)
 #endif
 }
 
-esp_err_t media_publish_run_resolution_test(void)
+esp_err_t stream_video_default_capture_run_resolution_test(void)
 {
 #if !HAVE_VIDEO_ENC_DEFAULT
     ESP_LOGE(TAG, "Resolution test requires esp_video_enc_default");
@@ -671,13 +672,16 @@ esp_err_t media_publish_run_resolution_test(void)
     return ESP_OK;
 }
 
-esp_err_t media_publish_start(stream_video_client_handle_t client)
+stream_video_error_t stream_video_default_capture_prepare(void *user_data,
+                                                          esp_capture_sink_handle_t *sink_out)
 {
-    if (!client) {
-        return ESP_ERR_INVALID_ARG;
+    (void)user_data;
+    if (!sink_out) {
+        return STREAM_VIDEO_ERR_INVALID_ARG;
     }
     if (s_capture) {
-        return ESP_OK;
+        *sink_out = s_sink;
+        return STREAM_VIDEO_ERR_OK;
     }
 
     init_codec_board_if_available();
@@ -834,7 +838,7 @@ esp_err_t media_publish_start(stream_video_client_handle_t client)
     };
     if (esp_capture_open(&cfg, &s_capture) != ESP_CAPTURE_ERR_OK || !s_capture) {
         ESP_LOGE(TAG, "Failed to open capture");
-        return ESP_FAIL;
+        return STREAM_VIDEO_ERR_FAIL;
     }
 
     ESP_LOGI(TAG, "Audio config: rate=%u channels=%u bits=%u",
@@ -857,7 +861,7 @@ esp_err_t media_publish_start(stream_video_client_handle_t client)
     };
     if (esp_capture_sink_setup(s_capture, 0, &sink_cfg, &s_sink) != ESP_CAPTURE_ERR_OK || !s_sink) {
         ESP_LOGE(TAG, "Failed to setup capture sink");
-        return ESP_FAIL;
+        return STREAM_VIDEO_ERR_FAIL;
     }
 #if defined(CONFIG_STREAM_AUDIO_AGC_ENABLE) && HAVE_GMF_ALC
     if (enable_audio) {
@@ -913,7 +917,7 @@ esp_err_t media_publish_start(stream_video_client_handle_t client)
 
     if (esp_capture_start(s_capture) != ESP_CAPTURE_ERR_OK) {
         ESP_LOGE(TAG, "Failed to start capture");
-        return ESP_FAIL;
+        return STREAM_VIDEO_ERR_FAIL;
     }
 
 #ifdef CONFIG_STREAM_AUDIO_DEBUG_MONITOR
@@ -922,36 +926,18 @@ esp_err_t media_publish_start(stream_video_client_handle_t client)
     }
 #endif
 
-    stream_video_publish_params_t params = {
-        .sink = s_sink,
-        .publish_audio = enable_audio,
-        .publish_video = true,
-    };
-    ESP_LOGI(TAG, "media_publish_start: calling stream_video_start_publishing (sink=%p audio=%d video=1)",
-             (void *)s_sink,
-             enable_audio ? 1 : 0);
-    stream_video_error_t err = stream_video_start_publishing(client, &params);
-    if (err != STREAM_VIDEO_ERR_OK) {
-        ESP_LOGE(TAG, "Failed to start publishing: %s (%d)",
-                 stream_video_error_to_string(err), err);
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "Media capture and publishing started");
-    return ESP_OK;
+    *sink_out = s_sink;
+    ESP_LOGI(TAG, "Media capture prepared (sink=%p)", (void *)s_sink);
+    return STREAM_VIDEO_ERR_OK;
 }
 
-esp_err_t media_publish_stop(stream_video_client_handle_t client)
+void stream_video_default_capture_stop(void *user_data)
 {
-    if (!client) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    stream_video_stop_publishing(client);
+    (void)user_data;
     if (s_capture) {
         esp_capture_stop(s_capture);
         esp_capture_close(s_capture);
         s_capture = NULL;
         s_sink = NULL;
     }
-    return ESP_OK;
 }
