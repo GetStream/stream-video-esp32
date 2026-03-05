@@ -12,32 +12,28 @@ This guide will help you get started with the Stream Video ESP32 SDK.
 
 ## Installation
 
-### Option 1: Using Component Manager (Recommended)
-
-Add the SDK to your project:
+From your ESP-IDF project directory, run:
 
 ```bash
 idf.py add-dependency "GetStream/stream-video-esp32=^0.1.0"
 ```
 
-### Option 2: Manual Installation
+This uses **ESP-IDF's Component Manager** (built into ESP-IDF) to download the Stream Video SDK and its dependencies. The package includes the core SDK and the default camera/microphone capture component for ESP32-S3 and ESP32-P4.
 
-1. Clone this repository
-2. Copy the `components/stream-video` directory to your project's `components/` directory
-3. Add dependencies to your `idf_component.yml`:
+## Application flow
 
-```yaml
-dependencies:
-  espressif/esp_peer: "^1.2.7"
-  espressif/esp_capture: "*"
-  espressif/av_render: "*"
-  nanopb/nanopb: "*"
-  espressif/media_lib_os: "*"
-```
+The app uses a small API:
 
-## Basic Example
+1. **Initialize** – `stream_video_init()`
+2. **Set capture provider** – `stream_video_set_capture_provider(prepare_cb, stop_cb, user_data)` so the SDK can capture and publish audio/video (e.g. use the default capture component for camera and microphone)
+3. **Join call** – `stream_video_join_call(&params, &client)` with environment, call type, call ID, mute flags, and a result callback
+4. **Leave call** – `stream_video_leave_call(client)`
 
-See `examples/minimal/` for a complete working example.
+The SDK handles the rest. Publishing starts automatically once you have joined.
+
+## Basic example
+
+See `examples/minimal/` for a complete working example. It uses the **stream-video-capture-default** component for camera and microphone capture on ESP32-S3/P4. Configuration (WiFi, user, environment, call type/call ID) is in `main.c` and optionally in `sdkconfig.defaults` / menuconfig.
 
 ## Next Steps
 

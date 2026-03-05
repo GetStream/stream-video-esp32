@@ -6,14 +6,10 @@ Start with the [main README](../README.md) and the [minimal example README](../e
 
 | Document | Description |
 |----------|--------------|
-| [api_reference.md](api_reference.md) | SDK API (init, errors, types; incomplete) |
+| [getting_started.md](getting_started.md) | Getting started, installation, app flow, minimal example |
+| [api_reference.md](api_reference.md) | App-facing API: init, set_capture_provider, join_call, leave_call, types, default capture |
+| [example_configuration.md](example_configuration.md) | Example configuration in main.c (user, environment, call, mute) |
 | [auth_flow.md](auth_flow.md) | Auth flow, token request, auth base URL |
-| [coordinator_sfu_flow.md](coordinator_sfu_flow.md) | Coordinator and SFU WebSocket flow |
-| [example_configuration.md](example_configuration.md) | Example configuration guide |
-| [getting_started.md](getting_started.md) | Getting started with the SDK |
-| [sdk_flow_after_auth.md](sdk_flow_after_auth.md) | SDK flow after auth |
-| [post_auth_flow_summary.md](post_auth_flow_summary.md) | Summary of post-auth flow |
 | [token_and_environment.md](token_and_environment.md) | Token and environment handling |
 | [signaling_architecture.md](signaling_architecture.md) | Signaling architecture |
 | [stream_url_guide.md](stream_url_guide.md) | Stream URL usage |
-| [android_sdk_comparison.md](android_sdk_comparison.md) | Comparison with Android SDK |

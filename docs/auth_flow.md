@@ -13,7 +13,7 @@ The SDK uses a default auth base URL to request tokens. This is the **demo/defau
 
 **How to change it:** Today the base URL is hardcoded. To use your own auth server, edit both of the above so the host and URL match your backend. The auth endpoint path is `/api/auth/create-token` with query parameters `environment`, `user_id`, and `exp`. Future versions may make this configurable via Kconfig.
 
-## Configuration Values (from Android Demo App)
+## Configuration Value
 
 ### Token Expiry
 ```c
@@ -110,7 +110,7 @@ void on_auth_received(const stream_video_auth_data_t *auth_data, void *user_data
 }
 ```
 
-## Summary
+## Quick reference
 
 - ✅ **Token Expiry**: 7 days (matches Android demo app)
 - ✅ **Base URL**: `pronto.getstream.io` (matches Android demo app)
