@@ -77,44 +77,32 @@ Ensure you have a backend server running that implements:
 GET https://pronto.getstream.io/api/auth/create-token?environment=xxx&user_id=xxx&exp=xxx
 ```
 
-## Menuconfig reference (Stream Video Example)
+## Menuconfig reference
 
-Run `idf.py menuconfig` and open the top-level **Stream Video Example** menu. Below is a snapshot of the options and what to tweak.
+Run `idf.py menuconfig`. **Stream Video Example** has only WiFi SSID and password. All other options (audio, video, board, ICE/STUN, etc.) are under **Stream Video SDK**.
 
 ### Menu snapshot
 
 ```
 Stream Video Example
 ├── WiFi SSID                          [string]
-├── WiFi password                      [string]
-├── STUN server override               [string]  (empty = use SFU list)
-├── Allow TURN over TCP/TLS            [n/y]
-├── Use STUN only (ignore TURN)        [n/y]
-├── Video encoder task stack size      [32768–262144]
-├── Camera board pin map               (ESP32-S3 WROOM | XIAO ESP32-S3 Sense)
-├── Force fixed video caps             [y/n]
-├── Run resolution/encoder test on boot [n/y]
-├── Video width (pixels)               [160–1920]
-├── Video height (pixels)              [120–1080]
-├── Video frame rate (fps)             [1–30]
-├── Video bitrate (bps)                [50000–5000000]
-├── Enable audio capture/publish       [y/n]
-├── Audio sample rate (Hz)             [8000–48000]
-├── Audio channel count                [1–2]
-├── Audio bits per sample              [16–32]
-├── Audio bitrate (bps)                [6000–128000]
-├── Audio input gain (dB)               [0–60]
-├── Enable AGC (ALC)                   [y/n]
-├── AGC base gain (dB)                 [-12–12]
-├── (debug) Probe mic level            [n/y]
-├── (debug) Audio frame monitor        [n/y]
-├── (debug) Dump Opus frames to RAM    [n/y]
-├── Audio I2S mode                     (I2S standard | I2S TDM)
-└── Camera pixel format                (YUV422 | YUV420)
+└── WiFi password                      [string]
 
 Component config → Stream Video SDK
 ├── Join flow task stack size          [4096–32768]
-└── Video encoder task stack size     [16384–131072]  (SDK default)
+├── Video encoder task stack size     [32768–262144]
+├── Log STUN UDP traffic (debug)       [n/y]
+├── STUN server override               [string]  (empty = use SFU list)
+├── Allow TURN over TCP/TLS            [n/y]
+├── Use STUN only (ignore TURN)        [n/y]
+├── Camera board pin map               (ESP32-S3 WROOM | XIAO ESP32-S3 Sense)
+├── Force fixed video caps             [y/n]
+├── Run resolution/encoder test on boot [n/y]
+├── Video width / height / fps / bitrate
+├── Camera pixel format                (YUV422 | YUV420)
+├── Enable audio capture/publish, sample rate, channels, bitrate, AGC, etc.
+├── (debug) Probe mic level, Audio frame monitor, Dump Opus, etc.
+└── Audio I2S mode                     (I2S standard | I2S TDM)
 ```
 
 ### Options worth tweaking

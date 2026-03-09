@@ -10,10 +10,263 @@ config STREAM_VIDEO_JOIN_TASK_STACK
 
 config STREAM_VIDEO_VENC_TASK_STACK
     int "Video encoder task stack size"
-    range 16384 131072
-    default 65536
+    range 32768 262144
+    default 131072
     help
-        Stack size (bytes) for video encoder tasks (venc_0/venc_1).
-        Increase if the encoder stack overflows.
+        Stack size (bytes) for the video encoder task(s). Increase
+        if the H264 encoder overflows the stack.
+
+# ---------------------------------------------------------------------------
+# ICE / STUN / TURN
+# ---------------------------------------------------------------------------
+
+config STREAM_VIDEO_STUN_OVERRIDE
+    string "STUN server override (empty = use SFU list)"
+    default "stun:stun.l.google.com:19302"
+    help
+        Override ICE server list with a single STUN URL. Leave empty
+        to use the SFU-provided ICE servers.
+
+config STREAM_VIDEO_ALLOW_TCP_TURN
+    bool "Allow TURN over TCP/TLS when provided"
+    default n
+    help
+        Prefer TURN URLs with transport=tcp or turns:// when available.
+
+config STREAM_VIDEO_STUN_ONLY
+    bool "Use STUN only (ignore TURN servers)"
+    default n
+    help
+        Discard TURN URLs from the SFU ICE list and use only STUN.
+
+# ---------------------------------------------------------------------------
+# Board / hardware
+# ---------------------------------------------------------------------------
+
+choice STREAM_VIDEO_BOARD
+    prompt "Camera board pin map"
+    default STREAM_VIDEO_BOARD_GENERIC_ESP32S3
+    help
+        Select the camera pin mapping for your board.
+
+config STREAM_VIDEO_BOARD_GENERIC_ESP32S3
+    bool "ESP32-S3 WROOM (default wiring)"
+
+config STREAM_VIDEO_BOARD_XIAO_ESP32S3_SENSE
+    bool "XIAO ESP32-S3 Sense (OV2640/OV3660)"
+
+endchoice
+
+config STREAM_CODEC_BOARD_TYPE
+    string
+    default "XIAO_ESP32S3_Sense" if STREAM_VIDEO_BOARD_XIAO_ESP32S3_SENSE
+    default "ESP32_S3_N16R8"
+
+# ---------------------------------------------------------------------------
+# Video capture / encode
+# ---------------------------------------------------------------------------
+
+config STREAM_VIDEO_USE_FIXED_CAPS
+    bool "Force fixed video caps"
+    default y
+    help
+        When enabled, apply the configured width/height/fps/pixel format
+        to the camera source. Disable to use camera driver defaults.
+
+config STREAM_VIDEO_WIDTH
+    int "Video width (pixels)"
+    range 160 1920
+    default 640
+    help
+        Video capture width for the camera and H264 encoder.
+
+config STREAM_VIDEO_HEIGHT
+    int "Video height (pixels)"
+    range 120 1080
+    default 480
+    help
+        Video capture height for the camera and H264 encoder.
+
+config STREAM_VIDEO_FPS
+    int "Video frame rate (fps)"
+    range 1 30
+    default 15
+    help
+        Video capture frame rate for the camera and H264 encoder.
+
+config STREAM_VIDEO_BITRATE
+    int "Video bitrate (bps)"
+    range 50000 5000000
+    default 800000
+    help
+        Target H264 bitrate for the capture sink encoder.
+
+choice STREAM_VIDEO_CAMERA_FMT
+    prompt "Camera pixel format"
+    default STREAM_VIDEO_CAMERA_FMT_YUV422
+    help
+        Select the pixel format requested from the camera sensor.
+
+config STREAM_VIDEO_CAMERA_FMT_YUV422
+    bool "YUV422 (YUYV)"
+    help
+        Most OV sensors default to YUV422 output.
+
+config STREAM_VIDEO_CAMERA_FMT_YUV420
+    bool "YUV420 (I420)"
+    help
+        Use only if the sensor supports YUV420 output.
+
+endchoice
+
+# ---------------------------------------------------------------------------
+# Audio capture / encode
+# ---------------------------------------------------------------------------
+
+config STREAM_AUDIO_ENABLE
+    bool "Enable audio capture/publish"
+    default y
+    help
+        Enable microphone capture and publish audio alongside video.
+
+config STREAM_AUDIO_SAMPLE_RATE
+    int "Audio sample rate (Hz)"
+    range 8000 48000
+    default 16000
+    help
+        Microphone sample rate used by the audio capture source.
+
+config STREAM_AUDIO_CHANNELS
+    int "Audio channel count"
+    range 1 2
+    default 2
+    help
+        Number of audio channels to capture and encode.
+
+config STREAM_AUDIO_BITS_PER_SAMPLE
+    int "Audio bits per sample"
+    range 16 32
+    default 16
+    help
+        Bit depth of audio samples captured from the microphone.
+
+config STREAM_AUDIO_BITRATE
+    int "Audio bitrate (bps)"
+    range 6000 128000
+    default 32000
+    help
+        Target Opus bitrate for the audio encoder.
+
+config STREAM_AUDIO_INPUT_GAIN
+    int "Audio input gain (dB)"
+    range 0 60
+    default 30
+    help
+        Hardware input gain applied to the microphone/codec input.
+
+config STREAM_AUDIO_AGC_ENABLE
+    bool "Enable AGC (ALC) in audio pipeline"
+    default y
+    help
+        Enables automatic level control in the capture pipeline to stabilize
+        voice loudness.
+
+config STREAM_AUDIO_AGC_GAIN_DB
+    int "AGC base gain (dB)"
+    range -12 12
+    default 0
+    depends on STREAM_AUDIO_AGC_ENABLE
+    help
+        Base gain applied by the ALC element. Use negative values to reduce
+        sensitivity and background pickup.
+
+choice STREAM_AUDIO_I2S_MODE
+    prompt "Audio I2S mode"
+    default STREAM_AUDIO_I2S_MODE_TDM if IDF_TARGET_ESP32S3
+    default STREAM_AUDIO_I2S_MODE_STD
+    help
+        Select the I2S mode for the audio codec/microphone interface.
+
+config STREAM_AUDIO_I2S_MODE_STD
+    bool "I2S standard"
+    help
+        Use standard I2S framing for microphone capture.
+
+config STREAM_AUDIO_I2S_MODE_TDM
+    bool "I2S TDM"
+    help
+        Use TDM framing for multi-channel microphone capture.
+
+endchoice
+
+# ---------------------------------------------------------------------------
+# Debug (disable for production)
+# ---------------------------------------------------------------------------
+
+menu "Debug"
+
+config STREAM_VIDEO_UDP_STUN_TRACE
+    bool "Log STUN UDP traffic"
+    default n
+    help
+        When enabled, the SDK compiles a small utility that wraps lwIP
+        sendto/recvfrom and logs STUN packet send/recv (IP:port, size, txid).
+        To activate tracing, you must also add to your project CMakeLists.txt:
+        target_link_options(${PROJECT_NAME}.elf PRIVATE
+            "-Wl,--wrap=lwip_sendto"
+            "-Wl,--wrap=lwip_recvfrom"
+        )
+
+config STREAM_VIDEO_RUN_RES_TEST
+    bool "Run resolution/encoder test on boot"
+    default n
+    help
+        Runs a short encoder test across common resolutions at boot and
+        then stops. Useful to find stable settings before publishing.
+
+config STREAM_AUDIO_LEVEL_PROBE
+    bool "Probe mic level before publish"
+    default n
+    help
+        Reads raw mic samples briefly and logs RMS/peak level.
+
+config STREAM_AUDIO_LEVEL_PROBE_MS
+    int "Mic level probe duration (ms)"
+    range 100 3000
+    default 500
+    depends on STREAM_AUDIO_LEVEL_PROBE
+    help
+        Duration of the raw mic level probe in milliseconds.
+
+config STREAM_AUDIO_DEBUG_MONITOR
+    bool "Enable audio frame monitor"
+    default n
+    help
+        Logs audio frame counts for a few seconds after capture starts.
+
+config STREAM_AUDIO_DUMP_OPUS
+    bool "Dump Opus frames to RAM"
+    default n
+    help
+        Writes encoded Opus frames to RAM for a short duration.
+        Each frame is stored with a 4-byte length prefix in a byte buffer.
+
+config STREAM_AUDIO_DUMP_SECONDS
+    int "Opus dump duration (seconds)"
+    range 1 300
+    default 30
+    depends on STREAM_AUDIO_DUMP_OPUS
+    help
+        Number of seconds to write Opus frames before stopping the dump.
+
+config STREAM_AUDIO_DUMP_MAX_BYTES
+    int "Opus dump RAM cap (bytes)"
+    range 1024 2097152
+    default 262144
+    depends on STREAM_AUDIO_DUMP_OPUS
+    help
+        Maximum RAM to use for Opus dump buffer before stopping the dump.
+
+endmenu
 
 endmenu

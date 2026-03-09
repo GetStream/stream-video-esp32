@@ -1,32 +1,30 @@
 # Stream Video ESP32-S3 - Complete Example
 
-This example demonstrates the complete flow matching the Android demo app:
-1. Request auth data (with user and environment selection)
-2. Connect to coordinator WebSocket
-3. Join call (with call_type and call_id selection)
-4. Connect to SFU WebSocket
-5. WebRTC negotiation (to be implemented)
+This example demonstrates the complete flow:
+1. **App** fetches auth data (token) from a token service (e.g. Stream's pronto or your backend)
+2. App passes auth data to the SDK; **SDK** connects to coordinator, joinCall, and SFU
+3. WebRTC negotiation (to be implemented)
 
 ## Configuration
 
 **WiFi:** Set SSID and password in `sdkconfig.defaults` (e.g. `CONFIG_STREAM_VIDEO_WIFI_SSID="MyWiFi"`) or run `idf.py menuconfig` and go to **Stream Video Example**. The example reads these from Kconfig; do not hardcode credentials in source.
 
-**Stream (environment, user, call):** Edit `main/main.c` and set:
+**Stream (token service, user, call):** Edit `main/main.c` and set:
 
-- `STREAM_ENVIRONMENT` — e.g. `"production"`, `"staging"`, or `"development"`
-- `STREAM_USER_ID` — user ID for auth (or `NULL` for auto-generated)
+- `STREAM_AUTH_BASE_URL` — base URL of your token service (e.g. `"https://pronto.getstream.io/"`)
+- `STREAM_ENVIRONMENT` — environment name passed to token service (e.g. `"pronto"`)
+- `STREAM_USER_ID` — user ID (or `NULL` for auto-generated)
 - `STREAM_CALL_TYPE` — e.g. `"default"`, `"livestream"`
 - `STREAM_CALL_ID` — call ID to join, or `NULL` to create a new call
 
 ### Audio Capture
 Audio publishing uses the microphone when a supported codec/mic board is present.
 It uses Espressif's `codec_board` component to initialize the audio codec and provide a record handle.
-Use `idf.py menuconfig` and configure:
-- `Stream Video Example → Enable audio capture/publish`
-- `Stream Video Example → Audio sample rate / channel count / bitrate / I2S mode`
+Use `idf.py menuconfig` and configure under **Stream Video SDK**:
+- Enable audio capture/publish, audio sample rate / channel count / bitrate / I2S mode
 Audio codec board selection follows the camera board pin map to avoid mismatches.
-If you need a different audio board type, add `CONFIG_STREAM_CODEC_BOARD_TYPE="..."`
-to `sdkconfig.defaults` or `sdkconfig`.
+If you need a different audio board type, add `CONFIG_STREAM_CODEC_BOARD_TYPE="..."` in
+**Stream Video SDK** (menuconfig) or in `sdkconfig.defaults`.
 For `XIAO_ESP32S3_Sense`, audio input uses the PDM mic path automatically.
 
 Supported boards from `codec_board` (as of esp-webrtc-solution main):
@@ -67,18 +65,11 @@ If you see `Failed to resolve component 'codec_board'` during build:
 
 1. **ESP-IDF v5.4 or higher** - Install from [ESP-IDF Getting Started](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/)
 
-2. **Backend Server** - You need a backend that implements the auth endpoint. The SDK uses the default auth base URL (see [Auth base URL](../../docs/auth_flow.md#auth-base-url) in the docs). Example:
+2. **Token service** - The **app** fetches the token. Use your own backend or Stream's . The example includes `app_token.c` which calls:
    ```
-   GET https://pronto.getstream.io/api/auth/create-token?environment=xxx&user_id=xxx&exp=xxx
+   GET <STREAM_AUTH_BASE_URL>api/auth/create-token?environment=xxx&user_id=xxx&exp=xxx
    ```
-   Response:
-   ```json
-   {
-       "userId": "user123",
-       "apiKey": "my-app:abc123",
-       "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-   }
-   ```
+   Response must be JSON: `{ "userId", "apiKey", "token" }`. See [auth_flow.md](../../docs/auth_flow.md).
 
 ## Building and Flashing
 
@@ -172,7 +163,7 @@ I (5678) main: Ready for WebRTC negotiation
 
 ### Auth Request Fails
 - Ensure backend server is running and accessible
-- The auth base URL is configured in the SDK (default: `pronto.getstream.io`). See [Auth base URL](../../docs/auth_flow.md#auth-base-url) for where it is defined and how to change it.
+- The token service URL is set in the app (`STREAM_AUTH_BASE_URL` in main.c). See [auth_flow.md](../../docs/auth_flow.md).
 - Verify backend returns correct JSON format
 
 ### Coordinator Connection Fails

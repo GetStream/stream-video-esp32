@@ -24,6 +24,9 @@
 extern "C" {
 #endif
 
+/** Forward declaration for join params; include stream_video_auth.h for full type */
+struct stream_video_auth_data;
+
 /**
  * @brief Error codes returned by Stream Video SDK functions
  */
@@ -80,6 +83,10 @@ typedef void (*stream_video_capture_stop_cb_t)(void *user_data);
 /**
  * @brief Parameters for joining a call (SDK-managed flow)
  *
+ * The app must obtain auth data (userId, apiKey, token) from its own backend
+ * or Stream's token service and pass it in \p auth_data. The SDK does not fetch
+ * tokens.
+ *
  * Publishing starts automatically when the SFU is connected. The SDK needs a
  * capture sink to read encoded frames from. You can either:
  * - Pass \p sink in the params (you prepare capture before join), or
@@ -88,9 +95,7 @@ typedef void (*stream_video_capture_stop_cb_t)(void *user_data);
  * If \p sink is NULL and no provider is set, no media is published (receive-only).
  */
 typedef struct {
-    const char *environment;   // Environment name (e.g., "production", "staging")
-    const char *user_id;       // Optional: User ID (NULL = auto-generate)
-    uint32_t exp;              // Token expiry in seconds
+    const struct stream_video_auth_data *auth_data;  // Auth data (app must obtain token and pass here)
     const char *call_type;     // Call type (e.g., "default")
     const char *call_id;       // Call ID (NULL = create new)
     bool create;               // Create call if it doesn't exist
@@ -144,9 +149,10 @@ const char* stream_video_error_to_string(stream_video_error_t error);
 /**
  * @brief Join a call (SDK-managed flow)
  *
- * This will handle auth, coordinator connect, joinCall, and SFU connect.
+ * The app must obtain auth data (token) before calling this and pass it in
+ * params->auth_data. This will connect to coordinator, joinCall, and SFU.
  *
- * @param params Join parameters
+ * @param params Join parameters (must include auth_data from app's token service)
  * @param client_out Output client handle
  * @return stream_video_error_t Error code
  */

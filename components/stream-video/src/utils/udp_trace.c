@@ -1,9 +1,18 @@
+/**
+ * @file udp_trace.c
+ * @brief Optional debug utility: log STUN UDP send/recv
+ *
+ * Only compiled when CONFIG_STREAM_VIDEO_UDP_STUN_TRACE is set.
+ * The application must add linker wrap options for the hooks to be used:
+ *   -Wl,--wrap=lwip_sendto -Wl,--wrap=lwip_recvfrom
+ */
+
 #include "esp_log.h"
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
 #include <string.h>
 
-static const char *TAG = "UDP_TRACE";
+static const char *TAG = "stream_udp_trace";
 
 ssize_t __real_lwip_sendto(int s, const void *dataptr, size_t size, int flags,
                            const struct sockaddr *to, socklen_t tolen);

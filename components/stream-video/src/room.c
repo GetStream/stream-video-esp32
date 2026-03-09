@@ -36,7 +36,6 @@ static stream_video_capture_stop_cb_t s_capture_stop_cb;
 static void *s_capture_provider_user_data;
 
 // Event bits
-#define JOIN_AUTH_DONE_BIT    BIT0
 #define JOIN_DONE_BIT         BIT1
 #define JOIN_FAILED_BIT       BIT2
 
@@ -448,20 +447,6 @@ static void on_coordinator_event(stream_signaling_client_handle_t client_handle,
     }
 }
 
-static stream_video_error_t on_auth_data_received(
-    const stream_video_auth_data_t *auth_data,
-    void *user_data)
-{
-    stream_video_client_t *client = (stream_video_client_t *)user_data;
-    if (!client || !auth_data) {
-        return STREAM_VIDEO_ERR_INVALID_ARG;
-    }
-
-    memcpy(&client->auth_data, auth_data, sizeof(stream_video_auth_data_t));
-    xEventGroupSetBits(client->event_group, JOIN_AUTH_DONE_BIT);
-    return STREAM_VIDEO_ERR_OK;
-}
-
 static void join_flow_task(void *arg)
 {
     stream_video_client_t *client = (stream_video_client_t *)arg;
@@ -469,36 +454,9 @@ static void join_flow_task(void *arg)
         vTaskDelete(NULL);
     }
 
-    stream_video_auth_request_t auth_req = {
-        .environment = client->params.environment,
-        .user_id = client->params.user_id,
-        .exp = client->params.exp,
-    };
+    /* Auth data was copied from params in stream_video_join_call (app-provided) */
 
-    stream_video_error_t err = stream_video_request_auth_data(
-        &auth_req,
-        on_auth_data_received,
-        client);
-    if (err != STREAM_VIDEO_ERR_OK) {
-        ESP_LOGE(TAG, "Failed to request auth data: %d", err);
-        publish_join_result(client, false, "Failed to request auth data");
-        xEventGroupSetBits(client->event_group, JOIN_FAILED_BIT);
-        vTaskDelete(NULL);
-    }
-
-    EventBits_t bits = xEventGroupWaitBits(
-        client->event_group,
-        JOIN_AUTH_DONE_BIT,
-        pdTRUE,
-        pdTRUE,
-        pdMS_TO_TICKS(30000));
-    if ((bits & JOIN_AUTH_DONE_BIT) == 0) {
-        ESP_LOGE(TAG, "Auth timed out");
-        publish_join_result(client, false, "Auth timed out");
-        xEventGroupSetBits(client->event_group, JOIN_FAILED_BIT);
-        vTaskDelete(NULL);
-    }
-
+    stream_video_error_t err;
     stream_signaling_config_t coordinator_config = {
         .api_key = client->auth_data.api_key,
         .user_id = client->auth_data.user_id,
@@ -585,7 +543,14 @@ stream_video_error_t stream_video_join_call(
     const stream_video_join_call_params_t *params,
     stream_video_client_handle_t *client_out)
 {
-    if (!params || !params->environment || !params->call_type || !client_out) {
+    if (!params || !client_out) {
+        return STREAM_VIDEO_ERR_INVALID_ARG;
+    }
+    if (!params->auth_data || !params->auth_data->user_id[0] || !params->auth_data->api_key[0] || !params->auth_data->token[0]) {
+        ESP_LOGE(TAG, "Invalid params: auth_data (user_id, api_key, token) required");
+        return STREAM_VIDEO_ERR_INVALID_ARG;
+    }
+    if (!params->call_type) {
         return STREAM_VIDEO_ERR_INVALID_ARG;
     }
 
@@ -595,6 +560,7 @@ stream_video_error_t stream_video_join_call(
     }
 
     client->params = *params;
+    memcpy(&client->auth_data, params->auth_data, sizeof(stream_video_auth_data_t));
     client->event_group = xEventGroupCreate();
     if (!client->event_group) {
         free(client);

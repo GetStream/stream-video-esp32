@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS
         "main.c"
-        "udp_trace.c"
+        "app_token.c"
     INCLUDE_DIRS
         "."
     REQUIRES

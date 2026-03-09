@@ -2,12 +2,13 @@
  * @file main.c
  * @brief Example using SDK join/leave APIs
  *
- * The app layer only calls SDK join/leave.
- * The SDK handles auth, coordinator connect, joinCall, and SFU connect.
+ * The app fetches the token from its token service (or Stream's), then passes
+ * auth data to the SDK. The SDK handles coordinator connect, joinCall, and SFU connect.
  *
  * Configuration (edit for your setup):
  * - WiFi: sdkconfig.defaults or idf.py menuconfig (Stream Video Example)
- * - User / environment / call: STREAM_USER_ID, STREAM_ENVIRONMENT, STREAM_CALL_TYPE, STREAM_CALL_ID below
+ * - Token service: STREAM_AUTH_BASE_URL, STREAM_ENVIRONMENT, STREAM_USER_ID
+ * - Call: STREAM_CALL_TYPE, STREAM_CALL_ID below
  */
 
 #include <stdio.h>
@@ -29,9 +30,11 @@
 #include "lwip/netdb.h"
 #include "lwip/inet.h"
 #include "stream_video.h"
+#include "stream_video_auth.h"
 #include "stream_video_capture.h"
 #include "sdkconfig.h"
 #include "stream_video_token.h"
+#include "app_token.h"
 
 static const char *TAG = "main";
 
@@ -43,9 +46,10 @@ static const char *TAG = "main";
 #define WIFI_SSID CONFIG_STREAM_VIDEO_WIFI_SSID
 #define WIFI_PASSWORD CONFIG_STREAM_VIDEO_WIFI_PASSWORD
 
-// User and Environment Selection (for auth request) - edit for your setup
-#define STREAM_ENVIRONMENT "pronto"   // "production", "staging", or "development"
-#define STREAM_USER_ID "esp32_user"   // User ID to authenticate as (can be NULL for auto-generated)
+// Token service and user (app fetches token, then passes to SDK)
+#define STREAM_AUTH_BASE_URL "https://pronto.getstream.io/"  // Your backend or Stream's token service
+#define STREAM_ENVIRONMENT "pronto"   // "production", "staging", or "pronto"
+#define STREAM_USER_ID "esp32_user"   // User ID (can be NULL for auto-generated)
 
 // Call Selection (for joining call) - edit for your call or set to NULL to create new
 #define STREAM_CALL_TYPE "default"    // Call type (e.g., "default", "livestream")
@@ -188,6 +192,11 @@ static void on_join_result(const stream_video_join_result_t *result, void *user_
     } else {
         ESP_LOGE(TAG, "✗ Join result: %s",
                  result->error_message[0] ? result->error_message : "unknown error");
+        /* Clean up client on join failure so SDK can free resources */
+        if (g_client) {
+            stream_video_leave_call(g_client);
+            g_client = NULL;
+        }
     }
 }
 
@@ -253,10 +262,23 @@ static void stream_flow_task(void *arg)
 
     sync_time();
 
+    /* App fetches token from token service (its own backend or Stream's) */
+    stream_video_auth_data_t auth_data = {0};
+    stream_video_error_t err = app_request_auth_data(
+        STREAM_AUTH_BASE_URL,
+        STREAM_ENVIRONMENT,
+        STREAM_USER_ID,
+        STREAM_VIDEO_DEFAULT_TOKEN_EXPIRY_SECONDS,
+        &auth_data);
+    if (err != STREAM_VIDEO_ERR_OK) {
+        ESP_LOGE(TAG, "Failed to get token: %d", err);
+        g_flow_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
     stream_video_join_call_params_t params = {
-        .environment = STREAM_ENVIRONMENT,
-        .user_id = STREAM_USER_ID,
-        .exp = STREAM_VIDEO_DEFAULT_TOKEN_EXPIRY_SECONDS,
+        .auth_data = &auth_data,
         .call_type = STREAM_CALL_TYPE,
         .call_id = STREAM_CALL_ID,
         .create = true,
@@ -268,7 +290,7 @@ static void stream_flow_task(void *arg)
         .mute_video = false,
     };
 
-    stream_video_error_t err = stream_video_join_call(&params, &g_client);
+    err = stream_video_join_call(&params, &g_client);
 
     if (err != STREAM_VIDEO_ERR_OK) {
         ESP_LOGE(TAG, "Failed to start join flow: %d", err);

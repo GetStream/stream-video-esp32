@@ -29,12 +29,14 @@ Fetched automatically via Component Manager:
 
 1. **Install ESP-IDF** v5.4+ and set target (e.g. `./install.sh esp32s3`). See [examples/minimal/BUILD_INSTRUCTIONS.md](examples/minimal/BUILD_INSTRUCTIONS.md) for full setup (macOS, Linux, Windows).
 
-2. **Add the SDK** to your project — in `idf_component.yml`:
+2. **Add the SDK** to your project — in your project root `idf_component.yml`:
    ```yaml
    dependencies:
      GetStream/stream-video-esp32: "^0.1.0"
    ```
-   Or: `idf.py add-dependency "GetStream/stream-video-esp32=^0.1.0"`
+   Or: `idf.py add-dependency "GetStream/stream-video-esp32=^0.1.0"`  
+   Then in your main component’s `CMakeLists.txt` add `stream-video` (and `stream-video-capture-default` if needed) to `REQUIRES`.  
+   **Full steps for a new app:** [docs/using_sdk_in_your_app.md](docs/using_sdk_in_your_app.md).
 
 3. **Run the minimal example**:
    ```bash

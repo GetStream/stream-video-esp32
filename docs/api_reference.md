@@ -17,10 +17,11 @@ Recommended usage:
 
 1. **Initialize** – `stream_video_init()`
 2. **Optional: set capture provider** – `stream_video_set_capture_provider()` so the SDK prepares/stops capture (e.g. using the default capture component for ESP32-S3/P4)
-3. **Join call** – `stream_video_join_call(&params, &client)` with environment, call_type, call_id, mute flags, and result callback
-4. **Leave call** – `stream_video_leave_call(client)`
+3. **Get auth data** – The **app** fetches a token (userId, apiKey, token) from its backend or Stream’s token service and fills a `stream_video_auth_data_t`. The SDK does not fetch tokens. See [Authentication](auth_flow.md).
+4. **Join call** – `stream_video_join_call(&params, &client)` with **params.auth_data** pointing to that auth data, plus call_type, call_id, mute flags, and result callback
+5. **Leave call** – `stream_video_leave_call(client)`
 
-The SDK handles auth, coordinator connection, joinCall REST, SFU WebSocket, and publishing. Publishing starts automatically after the SFU join response (no separate start/stop publish API).
+The SDK uses the auth data for coordinator connection, joinCall REST, SFU WebSocket, and publishing. Publishing starts automatically after the SFU join response (no separate start/stop publish API).
 
 ---
 
@@ -72,7 +73,7 @@ To use the built-in default capture (ESP32-S3/P4), link the `stream-video-captur
 
 ### stream_video_join_call
 
-Join a call using the SDK-managed flow (auth, coordinator, joinCall REST, SFU connect). Publishing starts automatically after the SFU join response, using the sink from params or from the capture provider, and the mute flags.
+Join a call using the SDK-managed flow (coordinator, joinCall REST, SFU connect). The app must pass **auth_data** (from its own token fetch) in params. Publishing starts automatically after the SFU join response, using the sink from params or from the capture provider, and the mute flags.
 
 ```c
 stream_video_error_t stream_video_join_call(
@@ -90,9 +91,7 @@ stream_video_error_t stream_video_join_call(
 
 | Field        | Type                            | Description |
 |-------------|----------------------------------|-------------|
-| `environment` | `const char *`                 | Environment (e.g. `"production"`, `"staging"`). |
-| `user_id`     | `const char *`                 | User ID; `NULL` for auto-generated. |
-| `exp`         | `uint32_t`                     | Token expiry in seconds. |
+| `auth_data`  | `const stream_video_auth_data_t *` | **Required.** Auth data (userId, apiKey, token) from the app’s token service. The app fetches the token; see [Authentication](auth_flow.md). |
 | `call_type`   | `const char *`                 | Call type (e.g. `"default"`). |
 | `call_id`     | `const char *`                 | Call ID; `NULL` to create a new call. |
 | `create`      | `bool`                         | If true, create the call if it does not exist. |

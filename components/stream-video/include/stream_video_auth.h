@@ -42,52 +42,13 @@ typedef struct {
  * @brief Auth data response
  * 
  * Matches Android SDK GetAuthDataResponse.
+ * The app obtains this from its own token service or Stream's (e.g. pronto) and passes to the SDK.
  */
-typedef struct {
+typedef struct stream_video_auth_data {
     char user_id[128];                 // User ID from response
     char api_key[256];                 // API key from response
     char token[512];                   // JWT token from response
 } stream_video_auth_data_t;
-
-/**
- * @brief Auth data request parameters
- */
-typedef struct {
-    const char *environment;           // Environment name (e.g., "production", "staging")
-    const char *user_id;               // Optional: User ID (can be NULL)
-    uint32_t exp;                      // Token expiry in seconds (default: 7 days)
-} stream_video_auth_request_t;
-
-/**
- * @brief Callback for auth data response
- * 
- * @param auth_data Auth data response
- * @param user_data User-provided context
- * @return stream_video_error_t Error code
- */
-typedef stream_video_error_t (*stream_video_auth_callback_t)(
-    const stream_video_auth_data_t *auth_data,
-    void *user_data
-);
-
-/**
- * @brief Request auth data from backend
- * 
- * Makes GET request to: api/auth/create-token
- * Query params: environment, user_id (optional), exp
- * 
- * This should be implemented by the application to call their backend.
- * 
- * @param request Auth request parameters
- * @param callback Callback when auth data is received
- * @param user_data User context for callback
- * @return stream_video_error_t Error code
- */
-stream_video_error_t stream_video_request_auth_data(
-    const stream_video_auth_request_t *request,
-    stream_video_auth_callback_t callback,
-    void *user_data
-);
 
 /**
  * @brief Create user object from auth data
