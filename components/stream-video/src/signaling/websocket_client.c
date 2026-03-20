@@ -45,6 +45,8 @@ struct stream_signaling_client {
     bool should_reconnect;
     void *user_data;
     char connection_id[64];
+    char connected_event[2048];
+    size_t connected_event_len;
     uint8_t *rx_buffer;
     size_t rx_size;
     size_t rx_offset;
@@ -53,26 +55,27 @@ struct stream_signaling_client {
 
 static void send_health_check(stream_signaling_client_handle_t client)
 {
-    if (!client) {
+    if (!client || !client->ws_client || client->connected_event_len == 0) {
+        return;
+    }
+    if (!esp_websocket_client_is_connected(client->ws_client)) {
         return;
     }
 
-    char message[160];
-    if (client->connection_id[0]) {
-        snprintf(message, sizeof(message),
-                 "{\"type\":\"connection.ok\",\"connection_id\":\"%s\"}",
-                 client->connection_id);
-    } else {
-        snprintf(message, sizeof(message), "{\"type\":\"connection.ok\"}");
+    int len = esp_websocket_client_send_bin(
+        client->ws_client,
+        client->connected_event,
+        (int)client->connected_event_len,
+        portMAX_DELAY);
+    if (len < 0) {
+        ESP_LOGW(TAG, "Failed to send coordinator health check");
     }
-
-    stream_signaling_client_send(client, (const uint8_t *)message, strlen(message));
 }
 
 static void health_monitor_task(void *pvParameters)
 {
     stream_signaling_client_handle_t client = (stream_signaling_client_handle_t)pvParameters;
-    const TickType_t check_interval = pdMS_TO_TICKS(1000);
+    const TickType_t check_interval = pdMS_TO_TICKS(10000);
     const TickType_t no_event_threshold = pdMS_TO_TICKS(30000);
 
     while (client && client->should_reconnect) {
@@ -122,8 +125,14 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
             }
             break;
 
-        case WEBSOCKET_EVENT_DISCONNECTED:
-            ESP_LOGI(TAG, "WebSocket disconnected");
+        case WEBSOCKET_EVENT_DISCONNECTED: {
+            TickType_t now_dc = xTaskGetTickCount();
+            uint32_t since_last_ms = (uint32_t)((now_dc - client->last_event_tick) * portTICK_PERIOD_MS);
+            ESP_LOGW(TAG, "Coordinator WebSocket DISCONNECTED — state=%d, "
+                     "connection_id=%s, last_event=%lu ms ago",
+                     (int)client->state,
+                     client->connection_id[0] ? client->connection_id : "(none)",
+                     (unsigned long)since_last_ms);
             client->state = STREAM_SIGNALING_STATE_DISCONNECTED;
             xEventGroupSetBits(client->event_group, WS_DISCONNECTED_BIT);
 
@@ -133,8 +142,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
                 client->rx_size = 0;
                 client->rx_offset = 0;
             }
-            
-            // Notify user
+
             if (client->config.event_cb) {
                 stream_signaling_event_t event = {
                     .type = STREAM_SIGNALING_EVENT_DISCONNECTED,
@@ -144,6 +152,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
                 client->config.event_cb(client, &event, client->config.user_data);
             }
             break;
+        }
 
         case WEBSOCKET_EVENT_DATA:
             ESP_LOGD(TAG, "Received data: opcode=%d, len=%d", data->op_code, data->data_len);
@@ -221,8 +230,23 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
             }
             break;
 
-        case WEBSOCKET_EVENT_ERROR:
-            ESP_LOGE(TAG, "WebSocket error");
+        case WEBSOCKET_EVENT_ERROR: {
+            TickType_t now_err = xTaskGetTickCount();
+            uint32_t since_last_err_ms = (uint32_t)((now_err - client->last_event_tick) * portTICK_PERIOD_MS);
+            ESP_LOGE(TAG, "Coordinator WebSocket ERROR — state=%d, "
+                     "connection_id=%s, last_event=%lu ms ago",
+                     (int)client->state,
+                     client->connection_id[0] ? client->connection_id : "(none)",
+                     (unsigned long)since_last_err_ms);
+            if (data) {
+                ESP_LOGE(TAG, "Coordinator WS error detail: type=%d, tls_err=0x%x, tls_stack=%d, "
+                         "sock_errno=%d, handshake_status=%d",
+                         (int)data->error_handle.error_type,
+                         data->error_handle.esp_tls_last_esp_err,
+                         data->error_handle.esp_tls_stack_err,
+                         data->error_handle.esp_transport_sock_errno,
+                         data->error_handle.esp_ws_handshake_status_code);
+            }
             client->state = STREAM_SIGNALING_STATE_ERROR;
             xEventGroupSetBits(client->event_group, WS_ERROR_BIT);
 
@@ -232,8 +256,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
                 client->rx_size = 0;
                 client->rx_offset = 0;
             }
-            
-            // Notify user
+
             if (client->config.event_cb) {
                 stream_signaling_event_t event = {
                     .type = STREAM_SIGNALING_EVENT_ERROR,
@@ -243,6 +266,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
                 client->config.event_cb(client, &event, client->config.user_data);
             }
             break;
+        }
 
         default:
             break;
@@ -322,6 +346,8 @@ stream_video_error_t stream_signaling_client_create(
     client->should_reconnect = true;
     client->reconnect_attempts = 0;
     client->connection_id[0] = '\0';
+    client->connected_event[0] = '\0';
+    client->connected_event_len = 0;
     client->rx_buffer = NULL;
     client->rx_size = 0;
     client->rx_offset = 0;
@@ -354,15 +380,13 @@ stream_video_error_t stream_signaling_client_create(
         return STREAM_VIDEO_ERR_NO_MEM;
     }
 
-    // Configure WebSocket client (ping/pong disabled — server does not support it; keepalive TBD later)
     esp_websocket_client_config_t ws_cfg = {
         .uri = client->signaling_url,
-        .reconnect_timeout_ms = 0, // We handle reconnection ourselves
+        .reconnect_timeout_ms = 0,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .task_stack = 8192,
         .headers = STREAM_WS_HEADERS,
-        .ping_interval_sec = 0,   // Disabled: server does not support ping-pong
-        .pingpong_timeout_sec = 0,
+        .disable_pingpong_discon = true,
     };
 
     client->ws_client = esp_websocket_client_init(&ws_cfg);
@@ -512,4 +536,22 @@ bool stream_signaling_client_is_connected(stream_signaling_client_handle_t clien
         return false;
     }
     return client->state == STREAM_SIGNALING_STATE_CONNECTED;
+}
+
+void stream_signaling_client_set_connected_event(
+    stream_signaling_client_handle_t client,
+    const char *json,
+    size_t len)
+{
+    if (!client) {
+        return;
+    }
+    if (json && len > 0 && len < sizeof(client->connected_event)) {
+        memcpy(client->connected_event, json, len);
+        client->connected_event[len] = '\0';
+        client->connected_event_len = len;
+    } else {
+        client->connected_event[0] = '\0';
+        client->connected_event_len = 0;
+    }
 }

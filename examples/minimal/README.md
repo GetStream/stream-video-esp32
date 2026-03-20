@@ -137,7 +137,7 @@ I (1234) main: ========================================
 I (1234) main: ✓ NVS initialized
 I (1234) main: ✓ Stream Video SDK initialized
 I (1234) main: WiFi initialized, connecting to MyWiFi...
-I (2345) main: Got IP: 192.168.1.100
+I (2345) main: WiFi connected, IP: 192.168.1.100
 I (2345) main: WiFi connected, starting Stream Video flow...
 I (2345) main: ✓ Auth data received
 I (2345) main:   User ID: user123

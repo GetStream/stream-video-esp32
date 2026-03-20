@@ -23,7 +23,6 @@
 #include "esp_sntp.h"
 #include "nvs_flash.h"
 #include "esp_netif.h"
-#include "esp_timer.h"
 #include "esp_psram.h"
 #include "esp_heap_caps.h"
 #include "lwip/sockets.h"
@@ -55,14 +54,6 @@ static const char *TAG = "main";
 #define STREAM_CALL_TYPE "default"    // Call type (e.g., "default", "livestream")
 #define STREAM_CALL_ID "79cYh3J5JgGk" // Call ID to join (can be NULL to create new call)
 
-// WiFi reconnect backoff: 1s, 2s, 4s, 8s, 16s, then cap at 30s
-#define WIFI_RECONNECT_BASE_MS   1000
-#define WIFI_RECONNECT_MAX_MS    30000
-#define WIFI_RECONNECT_CAP_SHIFT 5
-
-static int g_wifi_reconnect_attempts = 0;
-static esp_timer_handle_t g_wifi_reconnect_timer = NULL;
-
 // Global state
 static stream_video_client_handle_t g_client = NULL;
 static bool g_wifi_connected = false;
@@ -70,13 +61,6 @@ static bool g_flow_started = false;
 static TaskHandle_t g_flow_task = NULL;
 static bool g_join_complete = false;
 static bool g_join_success = false;
-
-static void wifi_reconnect_timer_cb(void *arg)
-{
-    (void)arg;
-    ESP_LOGI(TAG, "WiFi reconnect attempt after backoff");
-    esp_wifi_connect();
-}
 
 static void stun_udp_probe(void)
 {
@@ -260,6 +244,7 @@ static void stream_flow_task(void *arg)
         ESP_LOGW(TAG, "PSRAM not initialized");
     }
 
+    stun_udp_probe();
     sync_time();
 
     /* App fetches token from token service (its own backend or Stream's) */
@@ -301,34 +286,21 @@ static void stream_flow_task(void *arg)
 }
 
 /**
- * @brief WiFi event handler
+ * @brief WiFi event handler — reconnects immediately on disconnect
  */
-static void wifi_event_handler(void* arg, esp_event_base_t event_base,
-                              int32_t event_id, void* event_data)
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         g_wifi_connected = false;
-        g_wifi_reconnect_attempts++;
-        uint32_t delay_ms = WIFI_RECONNECT_BASE_MS;
-        if (g_wifi_reconnect_attempts <= WIFI_RECONNECT_CAP_SHIFT) {
-            delay_ms = (uint32_t)WIFI_RECONNECT_BASE_MS << (g_wifi_reconnect_attempts - 1);
-        }
-        if (delay_ms > WIFI_RECONNECT_MAX_MS) {
-            delay_ms = WIFI_RECONNECT_MAX_MS;
-        }
-        ESP_LOGI(TAG, "WiFi disconnected, reconnect in %lu ms (attempt %d)", (unsigned long)delay_ms, g_wifi_reconnect_attempts);
-        esp_timer_stop(g_wifi_reconnect_timer);
-        esp_timer_start_once(g_wifi_reconnect_timer, (uint64_t)delay_ms * 1000);
+        ESP_LOGI(TAG, "WiFi disconnected, reconnecting...");
+        esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        esp_timer_stop(g_wifi_reconnect_timer);
-        g_wifi_reconnect_attempts = 0;
-        ESP_LOGI(TAG, "WiFi connected");
-        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "WiFi connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
         g_wifi_connected = true;
-        stun_udp_probe();
 
         if (!g_flow_started) {
             g_flow_started = true;
@@ -373,14 +345,6 @@ static void wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-
-    const esp_timer_create_args_t timer_args = {
-        .callback = &wifi_reconnect_timer_cb,
-        .arg = NULL,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "wifi_reconnect",
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &g_wifi_reconnect_timer));
 
     ESP_LOGI(TAG, "WiFi initialized, connecting to %s...", WIFI_SSID);
 }

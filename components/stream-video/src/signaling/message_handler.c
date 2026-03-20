@@ -50,6 +50,12 @@ static void handle_connection_ok(stream_signaling_client_handle_t client, cJSON 
         stream_signaling_client_set_connection_id(client, connection_id->valuestring);
         ESP_LOGI(TAG, "Connection ID: %s", connection_id->valuestring);
     }
+
+    char *raw = cJSON_PrintUnformatted(json);
+    if (raw) {
+        stream_signaling_client_set_connected_event(client, raw, strlen(raw));
+        cJSON_free(raw);
+    }
 }
 
 /**

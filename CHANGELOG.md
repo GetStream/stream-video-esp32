@@ -19,6 +19,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Known limitations
 
-- Networking and reconnects: WiFi retry has no backoff; SFU uses health-based restart only.
+- Networking and reconnects: WiFi reconnects immediately on disconnect; coordinator and SFU WebSockets use health-based restart.
 - API reference is incomplete.
 - Auth base URL is hardcoded (documented in [docs/auth_flow.md](docs/auth_flow.md)).

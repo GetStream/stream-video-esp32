@@ -35,9 +35,11 @@ config STREAM_VIDEO_ALLOW_TCP_TURN
 
 config STREAM_VIDEO_STUN_ONLY
     bool "Use STUN only (ignore TURN servers)"
-    default n
+    default y
     help
         Discard TURN URLs from the SFU ICE list and use only STUN.
+        Enabled by default because esp_peer's ICE agent has issues
+        with TURN relay candidate prioritization.
 
 # ---------------------------------------------------------------------------
 # Board / hardware

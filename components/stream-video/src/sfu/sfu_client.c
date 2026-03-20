@@ -108,6 +108,7 @@ struct stream_sfu_client {
     size_t publish_option_count;
     esp_peer_ice_server_cfg_t *ice_servers;
     size_t ice_server_count;
+    TickType_t ws_connected_tick;
 };
 
 static bool encode_string_cb(pb_ostream_t *stream,
@@ -1541,6 +1542,21 @@ static stream_video_error_t sfu_send_set_publisher_http(
         return STREAM_VIDEO_ERR_FAIL;
     }
 
+    bool ws_connected = client->ws_client && esp_websocket_client_is_connected(client->ws_client);
+    TickType_t pre_tick = xTaskGetTickCount();
+    uint32_t since_ws_connect_ms = 0;
+    if (client->ws_connected_tick) {
+        since_ws_connect_ms = (uint32_t)((pre_tick - client->ws_connected_tick) * portTICK_PERIOD_MS);
+    }
+    uint32_t since_last_event_ms = (uint32_t)((pre_tick - client->last_event_tick) * portTICK_PERIOD_MS);
+    ESP_LOGI(TAG, "SetPublisher pre-flight: ws_connected=%d, sfu_state=%d, "
+             "session_id=%s, ws_uptime=%lu ms, last_sfu_event=%lu ms ago",
+             (int)ws_connected,
+             (int)client->state,
+             client->join_session_id,
+             (unsigned long)since_ws_connect_ms,
+             (unsigned long)since_last_event_ms);
+
     uint8_t *resp = NULL;
     size_t resp_len = 0;
     stream_video_error_t err = sfu_send_signal_request_with_response(
@@ -1550,7 +1566,16 @@ static stream_video_error_t sfu_send_set_publisher_http(
         stream.bytes_written,
         &resp,
         &resp_len);
+
+    bool ws_connected_after = client->ws_client && esp_websocket_client_is_connected(client->ws_client);
+    if (ws_connected != ws_connected_after) {
+        ESP_LOGW(TAG, "SetPublisher: WS state changed during HTTP request! before=%d after=%d",
+                 (int)ws_connected, (int)ws_connected_after);
+    }
+
     if (err != STREAM_VIDEO_ERR_OK) {
+        ESP_LOGE(TAG, "SetPublisher HTTP request failed: err=%d, ws_connected=%d (was %d)",
+                 (int)err, (int)ws_connected_after, (int)ws_connected);
         free(filtered_sdp);
         return err;
     }
@@ -1574,16 +1599,25 @@ static stream_video_error_t sfu_send_set_publisher_http(
     if (!pb_decode(&istream, stream_video_sfu_signal_SetPublisherResponse_fields, &response)) {
         ESP_LOGE(TAG, "Failed to decode SetPublisherResponse");
         free(resp);
+        free(filtered_sdp);
         return STREAM_VIDEO_ERR_FAIL;
     }
     free(resp);
 
     if (error_buf[0]) {
+        bool ws_now = client->ws_client && esp_websocket_client_is_connected(client->ws_client);
         ESP_LOGE(TAG, "SetPublisher error: %s", error_buf);
+        ESP_LOGE(TAG, "SetPublisher diagnosis: ws_connected_before=%d, ws_connected_now=%d, "
+                 "session_id=%s, sfu_state=%d",
+                 (int)ws_connected, (int)ws_now,
+                 client->join_session_id,
+                 (int)client->state);
+        free(filtered_sdp);
         return STREAM_VIDEO_ERR_FAIL;
     }
     if (response.error.code != stream_video_sfu_models_ErrorCode_ERROR_CODE_UNSPECIFIED) {
         ESP_LOGE(TAG, "SetPublisher error code: %d", response.error.code);
+        free(filtered_sdp);
         return STREAM_VIDEO_ERR_FAIL;
     }
 
@@ -1767,18 +1801,32 @@ static const char *sfu_peer_state_to_str(esp_peer_state_t state)
 static int peer_state_handler_common(esp_peer_state_t state, void *ctx, const char *label)
 {
     stream_sfu_client_handle_t client = (stream_sfu_client_handle_t)ctx;
-    if (client) {
-        ESP_LOGI(TAG, "%s peer state changed: %s (%d) (pub=%p sub=%p)",
-                 label,
-                 sfu_peer_state_to_str(state),
-                 (int)state,
-                 (void *)client->pub_peer,
-                 (void *)client->peer);
+    const char *state_str = sfu_peer_state_to_str(state);
+
+    if (state == ESP_PEER_STATE_CONNECT_FAILED) {
+        if (client) {
+            ESP_LOGE(TAG, "%s peer state changed: %s (%d) (pub=%p sub=%p)",
+                     label, state_str, (int)state,
+                     (void *)client->pub_peer, (void *)client->peer);
+        } else {
+            ESP_LOGE(TAG, "%s peer state changed: %s (%d)", label, state_str, (int)state);
+        }
+    } else if (state == ESP_PEER_STATE_DISCONNECTED || state == ESP_PEER_STATE_CLOSED) {
+        if (client) {
+            ESP_LOGW(TAG, "%s peer state changed: %s (%d) (pub=%p sub=%p)",
+                     label, state_str, (int)state,
+                     (void *)client->pub_peer, (void *)client->peer);
+        } else {
+            ESP_LOGW(TAG, "%s peer state changed: %s (%d)", label, state_str, (int)state);
+        }
     } else {
-        ESP_LOGI(TAG, "%s peer state changed: %s (%d)",
-                 label,
-                 sfu_peer_state_to_str(state),
-                 (int)state);
+        if (client) {
+            ESP_LOGI(TAG, "%s peer state changed: %s (%d) (pub=%p sub=%p)",
+                     label, state_str, (int)state,
+                     (void *)client->pub_peer, (void *)client->peer);
+        } else {
+            ESP_LOGI(TAG, "%s peer state changed: %s (%d)", label, state_str, (int)state);
+        }
     }
     return 0;
 }
@@ -2248,6 +2296,7 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
             client->state = STREAM_SFU_STATE_CONNECTED;
             client->reconnect_attempts = 0;
             client->last_event_tick = xTaskGetTickCount();
+            client->ws_connected_tick = xTaskGetTickCount();
             xEventGroupSetBits(client->event_group, SFU_CONNECTED_BIT);
             
             // Notify user
@@ -2270,12 +2319,24 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
             }
             break;
 
-        case WEBSOCKET_EVENT_DISCONNECTED:
-            ESP_LOGI(TAG, "SFU WebSocket disconnected");
+        case WEBSOCKET_EVENT_DISCONNECTED: {
+            TickType_t now = xTaskGetTickCount();
+            uint32_t ws_uptime_ms = 0;
+            if (client->ws_connected_tick) {
+                ws_uptime_ms = (uint32_t)((now - client->ws_connected_tick) * portTICK_PERIOD_MS);
+            }
+            uint32_t since_last_event_ms = (uint32_t)((now - client->last_event_tick) * portTICK_PERIOD_MS);
+            ESP_LOGW(TAG, "SFU WebSocket DISCONNECTED — uptime=%lu ms, last_event=%lu ms ago, "
+                     "state=%d, publishing=%d, session=%s",
+                     (unsigned long)ws_uptime_ms,
+                     (unsigned long)since_last_event_ms,
+                     (int)client->state,
+                     (int)client->publish_running,
+                     client->join_session_id[0] ? client->join_session_id : "(none)");
+            client->ws_connected_tick = 0;
             client->state = STREAM_SFU_STATE_DISCONNECTED;
             xEventGroupSetBits(client->event_group, SFU_DISCONNECTED_BIT);
-            
-            // Notify user
+
             if (client->config.event_cb) {
                 stream_sfu_event_t event = {
                     .type = STREAM_SFU_EVENT_DISCONNECTED,
@@ -2285,6 +2346,7 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
                 client->config.event_cb(client, &event, client->config.user_data);
             }
             break;
+        }
 
         case WEBSOCKET_EVENT_DATA:
             ESP_LOGD(TAG, "SFU received data: opcode=%d, len=%d", data->op_code, data->data_len);
@@ -2492,12 +2554,29 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
             }
             break;
 
-        case WEBSOCKET_EVENT_ERROR:
-            ESP_LOGE(TAG, "SFU WebSocket error");
+        case WEBSOCKET_EVENT_ERROR: {
+            TickType_t now_err = xTaskGetTickCount();
+            uint32_t err_uptime_ms = 0;
+            if (client->ws_connected_tick) {
+                err_uptime_ms = (uint32_t)((now_err - client->ws_connected_tick) * portTICK_PERIOD_MS);
+            }
+            ESP_LOGE(TAG, "SFU WebSocket ERROR — uptime=%lu ms, state=%d, publishing=%d, session=%s",
+                     (unsigned long)err_uptime_ms,
+                     (int)client->state,
+                     (int)client->publish_running,
+                     client->join_session_id[0] ? client->join_session_id : "(none)");
+            if (data) {
+                ESP_LOGE(TAG, "SFU WS error detail: type=%d, tls_err=0x%x, tls_stack=%d, "
+                         "sock_errno=%d, handshake_status=%d",
+                         (int)data->error_handle.error_type,
+                         data->error_handle.esp_tls_last_esp_err,
+                         data->error_handle.esp_tls_stack_err,
+                         data->error_handle.esp_transport_sock_errno,
+                         data->error_handle.esp_ws_handshake_status_code);
+            }
             client->state = STREAM_SFU_STATE_ERROR;
             xEventGroupSetBits(client->event_group, SFU_ERROR_BIT);
-            
-            // Notify user
+
             if (client->config.event_cb) {
                 stream_sfu_event_t event = {
                     .type = STREAM_SFU_EVENT_ERROR,
@@ -2507,6 +2586,7 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
                 client->config.event_cb(client, &event, client->config.user_data);
             }
             break;
+        }
 
         default:
             break;
@@ -2551,13 +2631,13 @@ stream_video_error_t stream_sfu_client_create(
         return STREAM_VIDEO_ERR_INVALID_ARG;
     }
 
-    // Configure WebSocket client
     esp_websocket_client_config_t ws_cfg = {
         .uri = config->ws_endpoint,
         .headers = client->ws_headers,
-        .reconnect_timeout_ms = 0, // We handle reconnection ourselves if needed
+        .reconnect_timeout_ms = 0,
         .task_stack = 8192,
         .crt_bundle_attach = esp_crt_bundle_attach,
+        .disable_pingpong_discon = true,
     };
 
     client->ws_client = esp_websocket_client_init(&ws_cfg);

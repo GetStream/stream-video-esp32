@@ -168,6 +168,21 @@ void stream_signaling_client_set_connection_id(
     const char *connection_id);
 
 /**
+ * @brief Store the raw ConnectedEvent JSON received from coordinator (internal)
+ *
+ * The health monitor re-sends this event periodically as a keep-alive,
+ * matching the Android SDK's CoordinatorHealthMonitor behaviour.
+ *
+ * @param client Signaling client handle
+ * @param json   Raw JSON bytes (copied internally)
+ * @param len    Length in bytes
+ */
+void stream_signaling_client_set_connected_event(
+    stream_signaling_client_handle_t client,
+    const char *json,
+    size_t len);
+
+/**
  * @brief Check if client is connected
  * 
  * @param client Client handle
