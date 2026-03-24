@@ -111,6 +111,7 @@ struct stream_sfu_client {
     TickType_t ws_connected_tick;
     bool has_joined;
     bool publisher_ready;
+    volatile esp_peer_state_t pub_peer_state;
     uint32_t reconnect_attempt;
     char http_auth_header[2100];
 };
@@ -166,6 +167,11 @@ static void sfu_send_trickle_from_sdp(stream_sfu_client_handle_t client, const c
     if (!client || !sdp || !client->join_session_id[0]) {
         return;
     }
+
+    #define MAX_UNIQUE_CANDIDATES 8
+    char seen[MAX_UNIQUE_CANDIDATES][256];
+    unsigned seen_count = 0;
+
     const char *cursor = sdp;
     unsigned sent = 0;
     while (*cursor) {
@@ -176,25 +182,41 @@ static void sfu_send_trickle_from_sdp(stream_sfu_client_handle_t client, const c
         }
         if (line_len > 12 && strncmp(cursor, "a=candidate:", 12) == 0) {
             char candidate[256];
-            size_t copy_len = line_len - 2; // skip "a="
+            size_t copy_len = line_len - 2;
             if (copy_len >= sizeof(candidate)) {
                 copy_len = sizeof(candidate) - 1;
             }
             memcpy(candidate, cursor + 2, copy_len);
             candidate[copy_len] = '\0';
-            sfu_send_ice_trickle_http(
-                client,
-                stream_video_sfu_PeerType_PEER_TYPE_PUBLISHER_UNSPECIFIED,
-                candidate);
-            sent++;
+
+            bool duplicate = false;
+            for (unsigned j = 0; j < seen_count; j++) {
+                if (strcmp(seen[j], candidate) == 0) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) {
+                if (seen_count < MAX_UNIQUE_CANDIDATES) {
+                    strncpy(seen[seen_count], candidate, sizeof(seen[0]) - 1);
+                    seen[seen_count][sizeof(seen[0]) - 1] = '\0';
+                    seen_count++;
+                }
+                sfu_send_ice_trickle_http(
+                    client,
+                    stream_video_sfu_PeerType_PEER_TYPE_PUBLISHER_UNSPECIFIED,
+                    candidate);
+                sent++;
+            }
         }
         if (!line_end) {
             break;
         }
         cursor = line_end + 1;
     }
+    #undef MAX_UNIQUE_CANDIDATES
     if (sent > 0) {
-        ESP_LOGI(TAG, "Sent %u ICE candidates from SDP", sent);
+        ESP_LOGI(TAG, "Sent %u unique ICE candidates from SDP", sent);
     } else {
         ESP_LOGW(TAG, "No ICE candidates found in SDP for trickle");
     }
@@ -1139,9 +1161,9 @@ static void sfu_send_health_check(stream_sfu_client_handle_t client)
         client->ws_client,
         (const char *)buffer,
         (int)stream.bytes_written,
-        portMAX_DELAY);
+        pdMS_TO_TICKS(2000));
     if (len < 0) {
-        ESP_LOGW(TAG, "Failed to send SFU health check");
+        ESP_LOGW(TAG, "Failed to send SFU health check (WS write timed out)");
     }
 }
 
@@ -1149,20 +1171,28 @@ static void sfu_health_monitor_task(void *pvParameters)
 {
     stream_sfu_client_handle_t client = (stream_sfu_client_handle_t)pvParameters;
     const TickType_t check_interval = pdMS_TO_TICKS(5000);
-    const TickType_t no_event_threshold = pdMS_TO_TICKS(15000);
+    const TickType_t no_event_threshold = pdMS_TO_TICKS(30000);
 
+    TickType_t last_sent_tick = xTaskGetTickCount();
     while (client) {
         vTaskDelay(check_interval);
 
         if (client->state == STREAM_SFU_STATE_CONNECTED) {
+            TickType_t pre_send = xTaskGetTickCount();
+            uint32_t since_last_send_ms = (uint32_t)((pre_send - last_sent_tick) * portTICK_PERIOD_MS);
+            if (since_last_send_ms > 8000) {
+                ESP_LOGW(TAG, "Health check delayed: %lu ms since last send (target 5000ms)",
+                         (unsigned long)since_last_send_ms);
+            }
             sfu_send_health_check(client);
+            last_sent_tick = xTaskGetTickCount();
 
             TickType_t now = xTaskGetTickCount();
             if ((now - client->last_event_tick) > no_event_threshold) {
                 if (!esp_websocket_client_is_connected(client->ws_client)) {
                     continue;
                 }
-                ESP_LOGW(TAG, "No SFU events for 15s, triggering reconnect...");
+                ESP_LOGW(TAG, "No SFU events for 30s, triggering reconnect...");
                 esp_websocket_client_stop(client->ws_client);
                 client->last_event_tick = xTaskGetTickCount();
             }
@@ -1456,15 +1486,6 @@ static stream_video_error_t sfu_send_set_publisher_http(
             if (!track_infos[i].codec_name[0] && opt->codec_name[0]) {
                 strncpy(track_infos[i].codec_name, opt->codec_name, sizeof(track_infos[i].codec_name) - 1);
             }
-            if (track_infos[i].video_width == 0 && opt->width) {
-                track_infos[i].video_width = opt->width;
-            }
-            if (track_infos[i].video_height == 0 && opt->height) {
-                track_infos[i].video_height = opt->height;
-            }
-            if (track_infos[i].video_fps == 0 && opt->fps) {
-                track_infos[i].video_fps = opt->fps;
-            }
         }
 
         if (track_infos[i].track_type == stream_video_sfu_models_TrackType_TRACK_TYPE_VIDEO) {
@@ -1608,6 +1629,9 @@ static stream_video_error_t sfu_send_set_publisher_http(
     if (err != STREAM_VIDEO_ERR_OK) {
         ESP_LOGE(TAG, "SetPublisher HTTP request failed: err=%d, ws_connected=%d (was %d)",
                  (int)err, (int)ws_connected_after, (int)ws_connected);
+        if (out_should_retry) {
+            *out_should_retry = true;
+        }
         free(filtered_sdp);
         return err;
     }
@@ -1690,7 +1714,6 @@ static stream_video_error_t sfu_send_set_publisher_http(
         esp_peer_send_msg(client->pub_peer, &msg);
         ESP_LOGI(TAG, "Publisher answer applied");
     }
-    sfu_send_trickle_from_sdp(client, filtered_sdp);
     free(filtered_sdp);
     return STREAM_VIDEO_ERR_OK;
 }
@@ -1910,6 +1933,8 @@ static int peer_state_handler_pub(esp_peer_state_t state, void *ctx)
         return 0;
     }
 
+    client->pub_peer_state = state;
+
     if (state == ESP_PEER_STATE_CONNECT_FAILED) {
         ESP_LOGE(TAG, "Publisher CONNECT_FAILED: ICE unrecoverable — will tear down and recreate peer");
         sfu_pub_peer_rebuild(client);
@@ -1962,9 +1987,9 @@ static int peer_msg_handler_pub(esp_peer_msg_t *info, void *ctx)
             client->publisher_ready = true;
             ESP_LOGI(TAG, "✓ SetPublisher succeeded, publisher_ready=true");
         } else if (should_retry) {
-            for (int retry = 0; retry < 3; retry++) {
-                int delay_ms = 500 + retry * 1500;
-                ESP_LOGW(TAG, "SetPublisher failed (should_retry=true), retry %d/3 after %dms",
+            for (int retry = 0; retry < 5; retry++) {
+                int delay_ms = 1000 + retry * 1500;
+                ESP_LOGW(TAG, "SetPublisher failed (should_retry=true), retry %d/5 after %dms",
                          retry + 1, delay_ms);
                 vTaskDelay(pdMS_TO_TICKS(delay_ms));
                 if (!client->pub_peer || !esp_websocket_client_is_connected(client->ws_client)) {
@@ -2047,7 +2072,17 @@ static void publish_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    ESP_LOGI(TAG, "publish_task: publisher_ready, starting media transmission");
+    ESP_LOGI(TAG, "publish_task: publisher_ready, waiting for DTLS/SRTP (CONNECTED state)");
+    while (client && client->publish_running &&
+           client->pub_peer_state != ESP_PEER_STATE_CONNECTED) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (!client || !client->publish_running) {
+        ESP_LOGW(TAG, "publish_task: aborted while waiting for CONNECTED");
+        vTaskDelete(NULL);
+        return;
+    }
+    ESP_LOGI(TAG, "publish_task: peer CONNECTED, starting media transmission");
 
     while (client && client->publish_running && client->publish_sink && client->pub_peer) {
         if (client->publish_video) {
@@ -2075,6 +2110,7 @@ static void publish_task(void *arg)
                              (unsigned)frame.pts);
                 }
                 esp_capture_sink_release_frame(client->publish_sink, &frame);
+                vTaskDelay(pdMS_TO_TICKS(5));
             } else {
                 static uint32_t video_errs = 0;
                 video_errs++;
@@ -2718,6 +2754,7 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
                                          "(matching Android SDK rejoin behaviour)");
                                 client->publish_running = false;
                                 client->publisher_ready = false;
+                                client->pub_peer_state = ESP_PEER_STATE_CLOSED;
                                 if (client->publish_task) {
                                     vTaskDelete(client->publish_task);
                                     client->publish_task = NULL;
@@ -2903,6 +2940,7 @@ stream_video_error_t stream_sfu_client_create(
     client->http_url[0] = '\0';
     client->ws_headers[0] = '\0';
     client->publisher_ready = false;
+    client->pub_peer_state = ESP_PEER_STATE_CLOSED;
     client->peer = NULL;
     client->peer_task = NULL;
     client->pub_peer = NULL;
@@ -2914,7 +2952,7 @@ stream_video_error_t stream_sfu_client_create(
     client->publish_running = false;
     client->ice_servers = NULL;
     client->ice_server_count = 0;
-    xTaskCreate(sfu_health_monitor_task, "sfu_health", 4096, client, 5, &client->health_task);
+    xTaskCreate(sfu_health_monitor_task, "sfu_health", 4096, client, 7, &client->health_task);
     xTaskCreate(sfu_reconnect_task, "sfu_reconn", 4096, client, 5, &client->reconnect_task);
 
     *client_out = client;
