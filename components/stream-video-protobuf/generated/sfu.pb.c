@@ -18,6 +18,21 @@ PB_BIND(stream_video_sfu_HealthCheckRequest, stream_video_sfu_HealthCheckRequest
 PB_BIND(stream_video_sfu_HealthCheckResponse, stream_video_sfu_HealthCheckResponse, AUTO)
 
 
+PB_BIND(stream_video_sfu_Sdk, stream_video_sfu_Sdk, AUTO)
+
+
+PB_BIND(stream_video_sfu_OS, stream_video_sfu_OS, AUTO)
+
+
+PB_BIND(stream_video_sfu_Device, stream_video_sfu_Device, AUTO)
+
+
+PB_BIND(stream_video_sfu_ClientDetails, stream_video_sfu_ClientDetails, AUTO)
+
+
+PB_BIND(stream_video_sfu_ReconnectDetails, stream_video_sfu_ReconnectDetails, AUTO)
+
+
 PB_BIND(stream_video_sfu_JoinRequest, stream_video_sfu_JoinRequest, AUTO)
 
 

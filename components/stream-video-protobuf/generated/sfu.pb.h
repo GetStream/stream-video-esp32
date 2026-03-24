@@ -17,12 +17,22 @@ typedef enum _stream_video_sfu_PeerType {
 } stream_video_sfu_PeerType;
 
 typedef enum _stream_video_sfu_WebsocketReconnectStrategy {
-    stream_video_sfu_WebsocketReconnectStrategy_WEBSOCKET_RECONNECT_STRATEGY_UNSPECIFIED = 0
+    stream_video_sfu_WebsocketReconnectStrategy_WEBSOCKET_RECONNECT_STRATEGY_UNSPECIFIED = 0,
+    stream_video_sfu_WebsocketReconnectStrategy_WEBSOCKET_RECONNECT_STRATEGY_DISCONNECT = 1,
+    stream_video_sfu_WebsocketReconnectStrategy_WEBSOCKET_RECONNECT_STRATEGY_FAST = 2,
+    stream_video_sfu_WebsocketReconnectStrategy_WEBSOCKET_RECONNECT_STRATEGY_REJOIN = 3,
+    stream_video_sfu_WebsocketReconnectStrategy_WEBSOCKET_RECONNECT_STRATEGY_MIGRATE = 4
 } stream_video_sfu_WebsocketReconnectStrategy;
 
 typedef enum _stream_video_sfu_ErrorCode {
     stream_video_sfu_ErrorCode_ERROR_CODE_UNSPECIFIED = 0
 } stream_video_sfu_ErrorCode;
+
+typedef enum _stream_video_sfu_SdkType {
+    stream_video_sfu_SdkType_SDK_TYPE_UNSPECIFIED = 0,
+    stream_video_sfu_SdkType_SDK_TYPE_ANDROID = 3,
+    stream_video_sfu_SdkType_SDK_TYPE_IOS = 4
+} stream_video_sfu_SdkType;
 
 /* Struct definitions */
 typedef struct _stream_video_sfu_ParticipantCount {
@@ -46,10 +56,48 @@ typedef struct _stream_video_sfu_HealthCheckResponse {
     stream_video_sfu_ParticipantCount participant_count;
 } stream_video_sfu_HealthCheckResponse;
 
+typedef struct _stream_video_sfu_ReconnectDetails {
+    stream_video_sfu_WebsocketReconnectStrategy strategy;
+    uint32_t reconnect_attempt;
+    pb_callback_t previous_session_id;
+} stream_video_sfu_ReconnectDetails;
+
+typedef struct _stream_video_sfu_Sdk {
+    stream_video_sfu_SdkType type;
+    pb_callback_t major;
+    pb_callback_t minor;
+    pb_callback_t patch;
+} stream_video_sfu_Sdk;
+
+typedef struct _stream_video_sfu_OS {
+    pb_callback_t name;
+    pb_callback_t version;
+    pb_callback_t architecture;
+} stream_video_sfu_OS;
+
+typedef struct _stream_video_sfu_Device {
+    pb_callback_t name;
+    pb_callback_t version;
+} stream_video_sfu_Device;
+
+typedef struct _stream_video_sfu_ClientDetails {
+    bool has_sdk;
+    stream_video_sfu_Sdk sdk;
+    bool has_os;
+    stream_video_sfu_OS os;
+    bool has_device;
+    stream_video_sfu_Device device;
+} stream_video_sfu_ClientDetails;
+
 typedef struct _stream_video_sfu_JoinRequest {
     pb_callback_t token;
     pb_callback_t session_id;
     pb_callback_t subscriber_sdp;
+    bool has_client_details;
+    stream_video_sfu_ClientDetails client_details;
+    bool fast_reconnect;
+    bool has_reconnect_details;
+    stream_video_sfu_ReconnectDetails reconnect_details;
     pb_callback_t publisher_sdp;
 } stream_video_sfu_JoinRequest;
 
@@ -173,13 +221,16 @@ extern "C" {
 #define _stream_video_sfu_PeerType_ARRAYSIZE ((stream_video_sfu_PeerType)(stream_video_sfu_PeerType_PEER_TYPE_SUBSCRIBER+1))
 
 #define _stream_video_sfu_WebsocketReconnectStrategy_MIN stream_video_sfu_WebsocketReconnectStrategy_WEBSOCKET_RECONNECT_STRATEGY_UNSPECIFIED
-#define _stream_video_sfu_WebsocketReconnectStrategy_MAX stream_video_sfu_WebsocketReconnectStrategy_WEBSOCKET_RECONNECT_STRATEGY_UNSPECIFIED
-#define _stream_video_sfu_WebsocketReconnectStrategy_ARRAYSIZE ((stream_video_sfu_WebsocketReconnectStrategy)(stream_video_sfu_WebsocketReconnectStrategy_WEBSOCKET_RECONNECT_STRATEGY_UNSPECIFIED+1))
+#define _stream_video_sfu_WebsocketReconnectStrategy_MAX stream_video_sfu_WebsocketReconnectStrategy_WEBSOCKET_RECONNECT_STRATEGY_MIGRATE
+#define _stream_video_sfu_WebsocketReconnectStrategy_ARRAYSIZE ((stream_video_sfu_WebsocketReconnectStrategy)(stream_video_sfu_WebsocketReconnectStrategy_WEBSOCKET_RECONNECT_STRATEGY_MIGRATE+1))
 
 #define _stream_video_sfu_ErrorCode_MIN stream_video_sfu_ErrorCode_ERROR_CODE_UNSPECIFIED
 #define _stream_video_sfu_ErrorCode_MAX stream_video_sfu_ErrorCode_ERROR_CODE_UNSPECIFIED
 #define _stream_video_sfu_ErrorCode_ARRAYSIZE ((stream_video_sfu_ErrorCode)(stream_video_sfu_ErrorCode_ERROR_CODE_UNSPECIFIED+1))
 
+#define _stream_video_sfu_SdkType_MIN stream_video_sfu_SdkType_SDK_TYPE_UNSPECIFIED
+#define _stream_video_sfu_SdkType_MAX stream_video_sfu_SdkType_SDK_TYPE_IOS
+#define _stream_video_sfu_SdkType_ARRAYSIZE ((stream_video_sfu_SdkType)(stream_video_sfu_SdkType_SDK_TYPE_IOS+1))
 
 
 
@@ -187,6 +238,11 @@ extern "C" {
 
 
 
+
+
+#define stream_video_sfu_Sdk_type_ENUMTYPE stream_video_sfu_SdkType
+
+#define stream_video_sfu_ReconnectDetails_strategy_ENUMTYPE stream_video_sfu_WebsocketReconnectStrategy
 
 #define stream_video_sfu_ICETrickle_peer_type_ENUMTYPE stream_video_sfu_PeerType
 
@@ -210,7 +266,12 @@ extern "C" {
 #define stream_video_sfu_CallState_init_default  {false, stream_video_sfu_ParticipantCount_init_default}
 #define stream_video_sfu_HealthCheckRequest_init_default {0}
 #define stream_video_sfu_HealthCheckResponse_init_default {false, stream_video_sfu_ParticipantCount_init_default}
-#define stream_video_sfu_JoinRequest_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define stream_video_sfu_Sdk_init_default {_stream_video_sfu_SdkType_MIN, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define stream_video_sfu_OS_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define stream_video_sfu_Device_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
+#define stream_video_sfu_ClientDetails_init_default {false, stream_video_sfu_Sdk_init_default, false, stream_video_sfu_OS_init_default, false, stream_video_sfu_Device_init_default}
+#define stream_video_sfu_ReconnectDetails_init_default {_stream_video_sfu_WebsocketReconnectStrategy_MIN, 0, {{NULL}, NULL}}
+#define stream_video_sfu_JoinRequest_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, stream_video_sfu_ClientDetails_init_default, 0, false, stream_video_sfu_ReconnectDetails_init_default, {{NULL}, NULL}}
 #define stream_video_sfu_JoinResponse_init_default {false, stream_video_sfu_CallState_init_default, 0, 0, {{NULL}, NULL}}
 #define stream_video_sfu_SubscriberOffer_init_default {0, {{NULL}, NULL}}
 #define stream_video_sfu_PublisherAnswer_init_default {{{NULL}, NULL}}
@@ -231,7 +292,12 @@ extern "C" {
 #define stream_video_sfu_CallState_init_zero     {false, stream_video_sfu_ParticipantCount_init_zero}
 #define stream_video_sfu_HealthCheckRequest_init_zero {0}
 #define stream_video_sfu_HealthCheckResponse_init_zero {false, stream_video_sfu_ParticipantCount_init_zero}
-#define stream_video_sfu_JoinRequest_init_zero   {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define stream_video_sfu_Sdk_init_zero {_stream_video_sfu_SdkType_MIN, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define stream_video_sfu_OS_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define stream_video_sfu_Device_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
+#define stream_video_sfu_ClientDetails_init_zero {false, stream_video_sfu_Sdk_init_zero, false, stream_video_sfu_OS_init_zero, false, stream_video_sfu_Device_init_zero}
+#define stream_video_sfu_ReconnectDetails_init_zero {_stream_video_sfu_WebsocketReconnectStrategy_MIN, 0, {{NULL}, NULL}}
+#define stream_video_sfu_JoinRequest_init_zero   {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, stream_video_sfu_ClientDetails_init_zero, 0, false, stream_video_sfu_ReconnectDetails_init_zero, {{NULL}, NULL}}
 #define stream_video_sfu_JoinResponse_init_zero  {false, stream_video_sfu_CallState_init_zero, 0, 0, {{NULL}, NULL}}
 #define stream_video_sfu_SubscriberOffer_init_zero {0, {{NULL}, NULL}}
 #define stream_video_sfu_PublisherAnswer_init_zero {{{NULL}, NULL}}
@@ -254,9 +320,27 @@ extern "C" {
 #define stream_video_sfu_ParticipantCount_anonymous_tag 2
 #define stream_video_sfu_CallState_participant_count_tag 3
 #define stream_video_sfu_HealthCheckResponse_participant_count_tag 1
+#define stream_video_sfu_ReconnectDetails_strategy_tag 1
+#define stream_video_sfu_ReconnectDetails_reconnect_attempt_tag 5
+#define stream_video_sfu_ReconnectDetails_previous_session_id_tag 7
+#define stream_video_sfu_Sdk_type_tag            1
+#define stream_video_sfu_Sdk_major_tag           2
+#define stream_video_sfu_Sdk_minor_tag           3
+#define stream_video_sfu_Sdk_patch_tag           4
+#define stream_video_sfu_OS_name_tag             1
+#define stream_video_sfu_OS_version_tag          2
+#define stream_video_sfu_OS_architecture_tag     3
+#define stream_video_sfu_Device_name_tag         1
+#define stream_video_sfu_Device_version_tag      2
+#define stream_video_sfu_ClientDetails_sdk_tag   1
+#define stream_video_sfu_ClientDetails_os_tag    2
+#define stream_video_sfu_ClientDetails_device_tag 4
 #define stream_video_sfu_JoinRequest_token_tag   1
 #define stream_video_sfu_JoinRequest_session_id_tag 2
 #define stream_video_sfu_JoinRequest_subscriber_sdp_tag 3
+#define stream_video_sfu_JoinRequest_client_details_tag 4
+#define stream_video_sfu_JoinRequest_fast_reconnect_tag 6
+#define stream_video_sfu_JoinRequest_reconnect_details_tag 7
 #define stream_video_sfu_JoinRequest_publisher_sdp_tag 8
 #define stream_video_sfu_JoinResponse_call_state_tag 1
 #define stream_video_sfu_JoinResponse_reconnected_tag 2
@@ -329,13 +413,56 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  participant_count,   1)
 #define stream_video_sfu_HealthCheckResponse_DEFAULT NULL
 #define stream_video_sfu_HealthCheckResponse_participant_count_MSGTYPE stream_video_sfu_ParticipantCount
 
+#define stream_video_sfu_ReconnectDetails_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    strategy,          1) \
+X(a, STATIC,   SINGULAR, UINT32,   reconnect_attempt, 5) \
+X(a, CALLBACK, SINGULAR, STRING,   previous_session_id, 7)
+#define stream_video_sfu_ReconnectDetails_CALLBACK pb_default_field_callback
+#define stream_video_sfu_ReconnectDetails_DEFAULT NULL
+
+#define stream_video_sfu_Sdk_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    type,              1) \
+X(a, CALLBACK, SINGULAR, STRING,   major,             2) \
+X(a, CALLBACK, SINGULAR, STRING,   minor,             3) \
+X(a, CALLBACK, SINGULAR, STRING,   patch,             4)
+#define stream_video_sfu_Sdk_CALLBACK pb_default_field_callback
+#define stream_video_sfu_Sdk_DEFAULT NULL
+
+#define stream_video_sfu_OS_FIELDLIST(X, a) \
+X(a, CALLBACK, SINGULAR, STRING,   name,              1) \
+X(a, CALLBACK, SINGULAR, STRING,   version,           2) \
+X(a, CALLBACK, SINGULAR, STRING,   architecture,      3)
+#define stream_video_sfu_OS_CALLBACK pb_default_field_callback
+#define stream_video_sfu_OS_DEFAULT NULL
+
+#define stream_video_sfu_Device_FIELDLIST(X, a) \
+X(a, CALLBACK, SINGULAR, STRING,   name,              1) \
+X(a, CALLBACK, SINGULAR, STRING,   version,           2)
+#define stream_video_sfu_Device_CALLBACK pb_default_field_callback
+#define stream_video_sfu_Device_DEFAULT NULL
+
+#define stream_video_sfu_ClientDetails_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  sdk,               1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  os,                2) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  device,            4)
+#define stream_video_sfu_ClientDetails_CALLBACK NULL
+#define stream_video_sfu_ClientDetails_DEFAULT NULL
+#define stream_video_sfu_ClientDetails_sdk_MSGTYPE stream_video_sfu_Sdk
+#define stream_video_sfu_ClientDetails_os_MSGTYPE stream_video_sfu_OS
+#define stream_video_sfu_ClientDetails_device_MSGTYPE stream_video_sfu_Device
+
 #define stream_video_sfu_JoinRequest_FIELDLIST(X, a) \
 X(a, CALLBACK, SINGULAR, STRING,   token,             1) \
 X(a, CALLBACK, SINGULAR, STRING,   session_id,        2) \
 X(a, CALLBACK, SINGULAR, STRING,   subscriber_sdp,    3) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  client_details,    4) \
+X(a, STATIC,   SINGULAR, BOOL,     fast_reconnect,    6) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  reconnect_details, 7) \
 X(a, CALLBACK, SINGULAR, STRING,   publisher_sdp,     8)
 #define stream_video_sfu_JoinRequest_CALLBACK pb_default_field_callback
 #define stream_video_sfu_JoinRequest_DEFAULT NULL
+#define stream_video_sfu_JoinRequest_client_details_MSGTYPE stream_video_sfu_ClientDetails
+#define stream_video_sfu_JoinRequest_reconnect_details_MSGTYPE stream_video_sfu_ReconnectDetails
 
 #define stream_video_sfu_JoinResponse_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  call_state,        1) \
@@ -465,6 +592,11 @@ extern const pb_msgdesc_t stream_video_sfu_ParticipantCount_msg;
 extern const pb_msgdesc_t stream_video_sfu_CallState_msg;
 extern const pb_msgdesc_t stream_video_sfu_HealthCheckRequest_msg;
 extern const pb_msgdesc_t stream_video_sfu_HealthCheckResponse_msg;
+extern const pb_msgdesc_t stream_video_sfu_Sdk_msg;
+extern const pb_msgdesc_t stream_video_sfu_OS_msg;
+extern const pb_msgdesc_t stream_video_sfu_Device_msg;
+extern const pb_msgdesc_t stream_video_sfu_ClientDetails_msg;
+extern const pb_msgdesc_t stream_video_sfu_ReconnectDetails_msg;
 extern const pb_msgdesc_t stream_video_sfu_JoinRequest_msg;
 extern const pb_msgdesc_t stream_video_sfu_JoinResponse_msg;
 extern const pb_msgdesc_t stream_video_sfu_SubscriberOffer_msg;
@@ -488,6 +620,11 @@ extern const pb_msgdesc_t stream_video_sfu_MediaStream_msg;
 #define stream_video_sfu_CallState_fields &stream_video_sfu_CallState_msg
 #define stream_video_sfu_HealthCheckRequest_fields &stream_video_sfu_HealthCheckRequest_msg
 #define stream_video_sfu_HealthCheckResponse_fields &stream_video_sfu_HealthCheckResponse_msg
+#define stream_video_sfu_Sdk_fields &stream_video_sfu_Sdk_msg
+#define stream_video_sfu_OS_fields &stream_video_sfu_OS_msg
+#define stream_video_sfu_Device_fields &stream_video_sfu_Device_msg
+#define stream_video_sfu_ClientDetails_fields &stream_video_sfu_ClientDetails_msg
+#define stream_video_sfu_ReconnectDetails_fields &stream_video_sfu_ReconnectDetails_msg
 #define stream_video_sfu_JoinRequest_fields &stream_video_sfu_JoinRequest_msg
 #define stream_video_sfu_JoinResponse_fields &stream_video_sfu_JoinResponse_msg
 #define stream_video_sfu_SubscriberOffer_fields &stream_video_sfu_SubscriberOffer_msg

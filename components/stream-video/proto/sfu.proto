@@ -31,10 +31,18 @@ message HealthCheckResponse {
     ParticipantCount participant_count = 1;
 }
 
+message ReconnectDetails {
+    WebsocketReconnectStrategy strategy = 1;
+    uint32 reconnect_attempt = 5;
+    string previous_session_id = 7;
+}
+
 message JoinRequest {
     string token = 1;
     string session_id = 2;
     string subscriber_sdp = 3;
+    bool fast_reconnect = 6;
+    ReconnectDetails reconnect_details = 7;
     string publisher_sdp = 8;
 }
 
@@ -66,6 +74,10 @@ message ChangePublishOptions {
 
 enum WebsocketReconnectStrategy {
     WEBSOCKET_RECONNECT_STRATEGY_UNSPECIFIED = 0;
+    WEBSOCKET_RECONNECT_STRATEGY_DISCONNECT = 1;
+    WEBSOCKET_RECONNECT_STRATEGY_FAST = 2;
+    WEBSOCKET_RECONNECT_STRATEGY_REJOIN = 3;
+    WEBSOCKET_RECONNECT_STRATEGY_MIGRATE = 4;
 }
 
 enum ErrorCode {

@@ -109,6 +109,10 @@ struct stream_sfu_client {
     esp_peer_ice_server_cfg_t *ice_servers;
     size_t ice_server_count;
     TickType_t ws_connected_tick;
+    bool has_joined;
+    bool publisher_ready;
+    uint32_t reconnect_attempt;
+    char http_auth_header[2100];
 };
 
 static bool encode_string_cb(pb_ostream_t *stream,
@@ -1187,6 +1191,13 @@ static void sfu_reconnect_task(void *pvParameters)
             continue;
         }
 
+        if (esp_websocket_client_is_connected(client->ws_client)) {
+            ESP_LOGI(TAG, "SFU WS already connected, clearing disconnect/error bits");
+            xEventGroupClearBits(client->event_group, wait_bits);
+            client->reconnect_attempts = 0;
+            continue;
+        }
+
         if (client->config.reconnect_max_attempts > 0 &&
             client->reconnect_attempts >= client->config.reconnect_max_attempts) {
             ESP_LOGW(TAG, "SFU max reconnection attempts reached");
@@ -1205,8 +1216,17 @@ static void sfu_reconnect_task(void *pvParameters)
             break;
         }
 
+        if (esp_websocket_client_is_connected(client->ws_client)) {
+            ESP_LOGI(TAG, "SFU WS reconnected during backoff, skipping start");
+            xEventGroupClearBits(client->event_group, wait_bits);
+            client->reconnect_attempts = 0;
+            continue;
+        }
+
         xEventGroupClearBits(client->event_group, wait_bits);
         client->state = STREAM_SFU_STATE_CONNECTING;
+
+        esp_websocket_client_stop(client->ws_client);
         esp_err_t err = esp_websocket_client_start(client->ws_client);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "SFU reconnect start failed: %s", esp_err_to_name(err));
@@ -1247,10 +1267,8 @@ static stream_video_error_t sfu_send_signal_request(
     }
 
     esp_http_client_set_method(http, HTTP_METHOD_POST);
-    esp_http_client_set_header(http, "Authorization", client->join_token);
-    esp_http_client_set_header(http, "stream-auth-type", "jwt");
+    esp_http_client_set_header(http, "Authorization", client->http_auth_header);
     esp_http_client_set_header(http, "Content-Type", "application/protobuf");
-    esp_http_client_set_header(http, "Accept", "application/protobuf");
     esp_http_client_set_post_field(http, (const char *)payload, payload_len);
 
     ESP_LOGI(TAG, "SFU HTTP request: %s (%u bytes)", path, (unsigned)payload_len);
@@ -1301,10 +1319,11 @@ static stream_video_error_t sfu_send_signal_request_with_response(
     }
 
     esp_http_client_set_method(http, HTTP_METHOD_POST);
-    esp_http_client_set_header(http, "Authorization", client->join_token);
-    esp_http_client_set_header(http, "stream-auth-type", "jwt");
+    esp_http_client_set_header(http, "Authorization", client->http_auth_header);
     esp_http_client_set_header(http, "Content-Type", "application/protobuf");
     esp_http_client_set_header(http, "Accept", "application/protobuf");
+
+    ESP_LOGI(TAG, "SFU HTTP request: POST %s (%u bytes)", url, (unsigned)payload_len);
 
     esp_err_t err = esp_http_client_open(http, payload_len);
     if (err != ESP_OK) {
@@ -1355,8 +1374,17 @@ static stream_video_error_t sfu_send_signal_request_with_response(
     esp_http_client_close(http);
     esp_http_client_cleanup(http);
 
+    ESP_LOGI(TAG, "SFU HTTP response: status=%d body=%u bytes", http_status, (unsigned)total);
+    if (total >= 4) {
+        ESP_LOGI(TAG, "SFU HTTP response first bytes: %02x %02x %02x %02x",
+                 buffer[0], buffer[1], buffer[2], buffer[3]);
+    }
+
     if (http_status < 200 || http_status >= 300) {
-        ESP_LOGE(TAG, "SFU signal request failed: HTTP %d", http_status);
+        ESP_LOGE(TAG, "SFU signal request failed: HTTP %d (body=%u bytes)", http_status, (unsigned)total);
+        if (total > 0 && total < 256) {
+            ESP_LOGE(TAG, "SFU error body: %.*s", (int)total, (char *)buffer);
+        }
         free(buffer);
         return STREAM_VIDEO_ERR_NETWORK;
     }
@@ -1368,8 +1396,12 @@ static stream_video_error_t sfu_send_signal_request_with_response(
 
 static stream_video_error_t sfu_send_set_publisher_http(
     stream_sfu_client_handle_t client,
-    const char *sdp)
+    const char *sdp,
+    bool *out_should_retry)
 {
+    if (out_should_retry) {
+        *out_should_retry = false;
+    }
     if (!client || !sdp || !client->join_session_id[0]) {
         return STREAM_VIDEO_ERR_INVALID_ARG;
     }
@@ -1604,19 +1636,21 @@ static stream_video_error_t sfu_send_set_publisher_http(
     }
     free(resp);
 
-    if (error_buf[0]) {
+    if (error_buf[0] || (response.has_error &&
+        response.error.code != stream_video_sfu_models_ErrorCode_ERROR_CODE_UNSPECIFIED)) {
         bool ws_now = client->ws_client && esp_websocket_client_is_connected(client->ws_client);
-        ESP_LOGE(TAG, "SetPublisher error: %s", error_buf);
+        ESP_LOGE(TAG, "SetPublisher error: code=%d should_retry=%d msg=%s",
+                 (int)response.error.code,
+                 (int)response.error.should_retry,
+                 error_buf[0] ? error_buf : "(none)");
         ESP_LOGE(TAG, "SetPublisher diagnosis: ws_connected_before=%d, ws_connected_now=%d, "
                  "session_id=%s, sfu_state=%d",
                  (int)ws_connected, (int)ws_now,
                  client->join_session_id,
                  (int)client->state);
-        free(filtered_sdp);
-        return STREAM_VIDEO_ERR_FAIL;
-    }
-    if (response.error.code != stream_video_sfu_models_ErrorCode_ERROR_CODE_UNSPECIFIED) {
-        ESP_LOGE(TAG, "SetPublisher error code: %d", response.error.code);
+        if (out_should_retry) {
+            *out_should_retry = response.error.should_retry;
+        }
         free(filtered_sdp);
         return STREAM_VIDEO_ERR_FAIL;
     }
@@ -1831,12 +1865,56 @@ static int peer_state_handler_common(esp_peer_state_t state, void *ctx, const ch
     return 0;
 }
 
+static stream_video_error_t sfu_pub_peer_ensure(stream_sfu_client_handle_t client);
+
+static void sfu_pub_peer_rebuild(stream_sfu_client_handle_t client)
+{
+    if (!client) {
+        return;
+    }
+    if (client->state != STREAM_SFU_STATE_CONNECTED) {
+        ESP_LOGW(TAG, "Skipping publisher rebuild — SFU not connected (state=%d)", (int)client->state);
+        return;
+    }
+
+    ESP_LOGW(TAG, "Rebuilding publisher peer connection");
+
+    if (client->pub_peer) {
+        esp_peer_handle_t old_pub = client->pub_peer;
+        TaskHandle_t old_task = client->pub_task;
+        client->pub_peer = NULL;
+        client->pub_task = NULL;
+        if (old_task) {
+            vTaskDelete(old_task);
+        }
+        esp_peer_close(old_pub);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    } else if (client->pub_task) {
+        vTaskDelete(client->pub_task);
+        client->pub_task = NULL;
+    }
+    sfu_reset_publish_track_ids(client);
+
+    stream_video_error_t err = sfu_pub_peer_ensure(client);
+    if (err != STREAM_VIDEO_ERR_OK) {
+        ESP_LOGE(TAG, "Failed to recreate publisher peer: %d", (int)err);
+    }
+}
+
 static int peer_state_handler_pub(esp_peer_state_t state, void *ctx)
 {
-    if (state == ESP_PEER_STATE_CONNECT_FAILED) {
-        ESP_LOGW(TAG, "Publisher CONNECT_FAILED: ICE could not establish. "
-                 "Try without CONFIG_STREAM_VIDEO_STUN_ONLY to use TURN relay, or check firewall/NAT.");
+    stream_sfu_client_handle_t client = (stream_sfu_client_handle_t)ctx;
+
+    if (!client || !client->pub_peer) {
+        ESP_LOGD(TAG, "Publisher state callback ignored — peer already torn down (state=%d)", (int)state);
+        return 0;
     }
+
+    if (state == ESP_PEER_STATE_CONNECT_FAILED) {
+        ESP_LOGE(TAG, "Publisher CONNECT_FAILED: ICE unrecoverable — will tear down and recreate peer");
+        sfu_pub_peer_rebuild(client);
+    }
+
     return peer_state_handler_common(state, ctx, "Publisher");
 }
 
@@ -1871,9 +1949,43 @@ static int peer_msg_handler_pub(esp_peer_msg_t *info, void *ctx)
         return 0;
     }
 
+    if (!client->pub_peer) {
+        ESP_LOGW(TAG, "Publisher msg callback ignored — peer already torn down (type=%d)", (int)info->type);
+        return 0;
+    }
+
     if (info->type == ESP_PEER_MSG_TYPE_SDP) {
         ESP_LOGI(TAG, "Publisher generated SDP offer (%d bytes)", info->size);
-        sfu_send_set_publisher_http(client, (const char *)info->data);
+        bool should_retry = false;
+        stream_video_error_t pub_err = sfu_send_set_publisher_http(client, (const char *)info->data, &should_retry);
+        if (pub_err == STREAM_VIDEO_ERR_OK) {
+            client->publisher_ready = true;
+            ESP_LOGI(TAG, "✓ SetPublisher succeeded, publisher_ready=true");
+        } else if (should_retry) {
+            for (int retry = 0; retry < 3; retry++) {
+                int delay_ms = 500 + retry * 1500;
+                ESP_LOGW(TAG, "SetPublisher failed (should_retry=true), retry %d/3 after %dms",
+                         retry + 1, delay_ms);
+                vTaskDelay(pdMS_TO_TICKS(delay_ms));
+                if (!client->pub_peer || !esp_websocket_client_is_connected(client->ws_client)) {
+                    ESP_LOGW(TAG, "SetPublisher retry aborted: peer or WS gone");
+                    break;
+                }
+                should_retry = false;
+                pub_err = sfu_send_set_publisher_http(client, (const char *)info->data, &should_retry);
+                if (pub_err == STREAM_VIDEO_ERR_OK) {
+                    client->publisher_ready = true;
+                    ESP_LOGI(TAG, "✓ SetPublisher succeeded on retry %d, publisher_ready=true", retry + 1);
+                    break;
+                }
+                if (!should_retry) {
+                    ESP_LOGE(TAG, "SetPublisher failed with non-retryable error, giving up");
+                    break;
+                }
+            }
+        } else {
+            ESP_LOGE(TAG, "SetPublisher failed (should_retry=false), not retrying");
+        }
     } else if (info->type == ESP_PEER_MSG_TYPE_CANDIDATE) {
         ESP_LOGI(TAG, "Publisher generated ICE candidate (%d bytes)", info->size);
         ESP_LOGI(TAG, "Publisher ICE candidate: %.*s", info->size, (const char *)info->data);
@@ -1925,6 +2037,18 @@ static void publish_task(void *arg)
              (void *)client->pub_peer,
              client->publish_video ? 1 : 0,
              client->publish_audio ? 1 : 0);
+
+    ESP_LOGI(TAG, "publish_task: waiting for publisher_ready (SetPublisher must succeed first)");
+    while (client && client->publish_running && !client->publisher_ready) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (!client || !client->publish_running) {
+        ESP_LOGW(TAG, "publish_task: aborted while waiting for publisher_ready");
+        vTaskDelete(NULL);
+        return;
+    }
+    ESP_LOGI(TAG, "publish_task: publisher_ready, starting media transmission");
+
     while (client && client->publish_running && client->publish_sink && client->pub_peer) {
         if (client->publish_video) {
             esp_capture_stream_frame_t frame = {
@@ -2231,13 +2355,84 @@ static stream_video_error_t sfu_send_join_request(stream_sfu_client_handle_t cli
     join_req.token.arg = (void *)client->join_token;
     join_req.session_id.funcs.encode = encode_string_cb;
     join_req.session_id.arg = (void *)client->join_session_id;
+
+    static const char *subscriber_sdp =
+        "v=0\r\n"
+        "o=- 0 0 IN IP4 0.0.0.0\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "a=group:BUNDLE 0 1\r\n"
+        "a=msid-semantic: WMS\r\n"
+        "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+        "c=IN IP4 0.0.0.0\r\n"
+        "a=mid:0\r\n"
+        "a=recvonly\r\n"
+        "a=rtcp-mux\r\n"
+        "a=rtpmap:111 opus/48000/2\r\n"
+        "a=fmtp:111 minptime=10;useinbandfec=1\r\n"
+        "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+        "c=IN IP4 0.0.0.0\r\n"
+        "a=mid:1\r\n"
+        "a=recvonly\r\n"
+        "a=rtcp-mux\r\n"
+        "a=rtpmap:96 H264/90000\r\n"
+        "a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n"
+        "a=rtcp-fb:96 nack\r\n"
+        "a=rtcp-fb:96 nack pli\r\n"
+        "a=rtcp-fb:96 transport-cc\r\n"
+        "a=rtcp-fb:96 ccm fir\r\n"
+        "a=rtcp-fb:96 goog-remb\r\n";
+    join_req.subscriber_sdp.funcs.encode = encode_string_cb;
+    join_req.subscriber_sdp.arg = (void *)subscriber_sdp;
+
+    join_req.has_client_details = true;
+    join_req.client_details.has_sdk = true;
+    join_req.client_details.sdk.type = stream_video_sfu_SdkType_SDK_TYPE_UNSPECIFIED;
+    static const char *sdk_major = "0";
+    static const char *sdk_minor = "1";
+    static const char *sdk_patch = "0";
+    join_req.client_details.sdk.major.funcs.encode = encode_string_cb;
+    join_req.client_details.sdk.major.arg = (void *)sdk_major;
+    join_req.client_details.sdk.minor.funcs.encode = encode_string_cb;
+    join_req.client_details.sdk.minor.arg = (void *)sdk_minor;
+    join_req.client_details.sdk.patch.funcs.encode = encode_string_cb;
+    join_req.client_details.sdk.patch.arg = (void *)sdk_patch;
+
+    join_req.client_details.has_os = true;
+    static const char *os_name = "esp-idf";
+    static const char *os_arch = "xtensa";
+    join_req.client_details.os.name.funcs.encode = encode_string_cb;
+    join_req.client_details.os.name.arg = (void *)os_name;
+    join_req.client_details.os.architecture.funcs.encode = encode_string_cb;
+    join_req.client_details.os.architecture.arg = (void *)os_arch;
+
+    join_req.client_details.has_device = true;
+    static const char *dev_name = "esp32s3";
+    join_req.client_details.device.name.funcs.encode = encode_string_cb;
+    join_req.client_details.device.name.arg = (void *)dev_name;
+
+    if (client->has_joined) {
+        client->reconnect_attempt++;
+        join_req.fast_reconnect = true;
+        join_req.has_reconnect_details = true;
+        join_req.reconnect_details.strategy =
+            stream_video_sfu_WebsocketReconnectStrategy_WEBSOCKET_RECONNECT_STRATEGY_FAST;
+        join_req.reconnect_details.reconnect_attempt = client->reconnect_attempt;
+        join_req.reconnect_details.previous_session_id.funcs.encode = encode_string_cb;
+        join_req.reconnect_details.previous_session_id.arg = (void *)client->join_session_id;
+        ESP_LOGI(TAG, "SFU join request (FAST reconnect #%lu): token_len=%u session_id=%s",
+                 (unsigned long)client->reconnect_attempt,
+                 (unsigned)strlen(client->join_token),
+                 client->join_session_id);
+    } else {
+        ESP_LOGI(TAG, "SFU join request (first join): token_len=%u session_id=%s",
+                 (unsigned)strlen(client->join_token),
+                 client->join_session_id);
+    }
+
     request.request_payload.join_request = join_req;
 
-    ESP_LOGI(TAG, "SFU join request: token_len=%u session_id=%s",
-             (unsigned)strlen(client->join_token),
-             client->join_session_id);
-
-    size_t buffer_size = 512;
+    size_t buffer_size = 2048;
     uint8_t *buffer = NULL;
     pb_ostream_t stream;
     bool encoded = false;
@@ -2266,6 +2461,12 @@ static stream_video_error_t sfu_send_join_request(stream_sfu_client_handle_t cli
         return STREAM_VIDEO_ERR_FAIL;
     }
 
+    ESP_LOGI(TAG, "SFU join request encoded: %u bytes", (unsigned)stream.bytes_written);
+    if (stream.bytes_written >= 4) {
+        ESP_LOGI(TAG, "SFU join request first bytes: %02x %02x %02x %02x",
+                 buffer[0], buffer[1], buffer[2], buffer[3]);
+    }
+
     int len = esp_websocket_client_send_bin(
         client->ws_client,
         (const char *)buffer,
@@ -2276,7 +2477,12 @@ static stream_video_error_t sfu_send_join_request(stream_sfu_client_handle_t cli
         ESP_LOGE(TAG, "Failed to send SFU join request");
         return STREAM_VIDEO_ERR_NETWORK;
     }
+    if (len != (int)stream.bytes_written) {
+        ESP_LOGW(TAG, "SFU join request: sent %d of %u bytes",
+                 len, (unsigned)stream.bytes_written);
+    }
 
+    ESP_LOGI(TAG, "✓ SFU join request sent (%d bytes)", len);
     return STREAM_VIDEO_ERR_OK;
 }
 
@@ -2297,6 +2503,7 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
             client->reconnect_attempts = 0;
             client->last_event_tick = xTaskGetTickCount();
             client->ws_connected_tick = xTaskGetTickCount();
+            xEventGroupClearBits(client->event_group, SFU_DISCONNECTED_BIT | SFU_ERROR_BIT);
             xEventGroupSetBits(client->event_group, SFU_CONNECTED_BIT);
             
             // Notify user
@@ -2312,9 +2519,7 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
             if (client->join_token[0] && client->join_session_id[0]) {
                 stream_video_error_t err = sfu_send_join_request(client);
                 if (err != STREAM_VIDEO_ERR_OK) {
-                    ESP_LOGW(TAG, "Failed to send SFU join request: %d", err);
-                } else {
-                    ESP_LOGI(TAG, "✓ SFU join request sent");
+                    ESP_LOGW(TAG, "Failed to send SFU join request on connect: %d", err);
                 }
             }
             break;
@@ -2488,10 +2693,11 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
                                          (int)event.event_payload.ice_trickle.peer_type);
                             }
                             break;
-                        case stream_video_sfu_SfuEvent_join_response_tag:
+                        case stream_video_sfu_SfuEvent_join_response_tag: {
+                            bool was_reconnected = event.event_payload.join_response.reconnected;
                             ESP_LOGI(TAG, "SFU join response received");
                             ESP_LOGI(TAG, "Join response: reconnected=%d deadline=%d publish_options=%u",
-                                     (int)event.event_payload.join_response.reconnected,
+                                     (int)was_reconnected,
                                      (int)event.event_payload.join_response.fast_reconnect_deadline_seconds,
                                      (unsigned)client->publish_option_count);
                             if (client->publish_option_count) {
@@ -2507,10 +2713,41 @@ static void sfu_websocket_event_handler(void *handler_args, esp_event_base_t bas
                                              (unsigned)client->publish_options[i].fps);
                                 }
                             }
+                            if (!was_reconnected && (client->pub_peer || client->publish_task)) {
+                                ESP_LOGW(TAG, "Fresh join (reconnected=0): tearing down stale publisher "
+                                         "(matching Android SDK rejoin behaviour)");
+                                client->publish_running = false;
+                                client->publisher_ready = false;
+                                if (client->publish_task) {
+                                    vTaskDelete(client->publish_task);
+                                    client->publish_task = NULL;
+                                }
+                                if (client->pub_peer) {
+                                    esp_peer_handle_t old_pub = client->pub_peer;
+                                    TaskHandle_t old_task = client->pub_task;
+                                    client->pub_peer = NULL;
+                                    client->pub_task = NULL;
+                                    if (old_task) {
+                                        vTaskDelete(old_task);
+                                    }
+                                    esp_peer_close(old_pub);
+                                    vTaskDelay(pdMS_TO_TICKS(100));
+                                } else if (client->pub_task) {
+                                    vTaskDelete(client->pub_task);
+                                    client->pub_task = NULL;
+                                }
+                                sfu_reset_publish_track_ids(client);
+                            }
+                            client->has_joined = true;
+                            if (was_reconnected) {
+                                ESP_LOGI(TAG, "SFU confirmed fast reconnect — session preserved");
+                                client->reconnect_attempt = 0;
+                            }
                             if (client->config.on_join_response) {
                                 client->config.on_join_response(client, client->config.user_data);
                             }
                             break;
+                        }
                         case stream_video_sfu_SfuEvent_change_publish_options_tag:
                             ESP_LOGI(TAG, "SFU change publish options received");
                             if (client->publish_option_count) {
@@ -2634,7 +2871,8 @@ stream_video_error_t stream_sfu_client_create(
     esp_websocket_client_config_t ws_cfg = {
         .uri = config->ws_endpoint,
         .headers = client->ws_headers,
-        .reconnect_timeout_ms = 0,
+        .reconnect_timeout_ms = 10000,
+        .network_timeout_ms = 10000,
         .task_stack = 8192,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .disable_pingpong_discon = true,
@@ -2660,9 +2898,11 @@ stream_video_error_t stream_sfu_client_create(
     }
     client->last_event_tick = xTaskGetTickCount();
     client->join_token[0] = '\0';
+    client->http_auth_header[0] = '\0';
     client->join_session_id[0] = '\0';
     client->http_url[0] = '\0';
     client->ws_headers[0] = '\0';
+    client->publisher_ready = false;
     client->peer = NULL;
     client->peer_task = NULL;
     client->pub_peer = NULL;
@@ -2809,6 +3049,8 @@ stream_video_error_t stream_sfu_client_send_join_request(
     }
 
     strncpy(client->join_token, token, sizeof(client->join_token) - 1);
+    snprintf(client->http_auth_header, sizeof(client->http_auth_header),
+             "Bearer %s", token);
     strncpy(client->join_session_id, session_id, sizeof(client->join_session_id) - 1);
 
     if (client->state == STREAM_SFU_STATE_CONNECTED) {

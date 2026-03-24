@@ -112,6 +112,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
             client->state = STREAM_SIGNALING_STATE_CONNECTED;
             client->reconnect_attempts = 0;
             client->last_event_tick = xTaskGetTickCount();
+            xEventGroupClearBits(client->event_group, WS_DISCONNECTED_BIT | WS_ERROR_BIT);
             xEventGroupSetBits(client->event_group, WS_CONNECTED_BIT);
             
             // Notify user
@@ -273,45 +274,57 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
     }
 }
 
-/**
- * @brief Reconnection task
- */
 static void reconnect_task(void *pvParameters)
 {
     stream_signaling_client_handle_t client = (stream_signaling_client_handle_t)pvParameters;
-    
+    const EventBits_t wait_bits = WS_DISCONNECTED_BIT | WS_ERROR_BIT;
+
     while (client->should_reconnect) {
-        // Wait for disconnection
-        xEventGroupWaitBits(client->event_group, WS_DISCONNECTED_BIT | WS_ERROR_BIT,
+        xEventGroupWaitBits(client->event_group, wait_bits,
                            false, false, portMAX_DELAY);
-        
+
         if (!client->should_reconnect) {
             break;
         }
-        
-        // Check max attempts
+
+        if (esp_websocket_client_is_connected(client->ws_client)) {
+            ESP_LOGI(TAG, "Coordinator WS already connected, clearing disconnect/error bits");
+            xEventGroupClearBits(client->event_group, wait_bits);
+            client->reconnect_attempts = 0;
+            continue;
+        }
+
         if (client->config.reconnect_max_attempts > 0 &&
             client->reconnect_attempts >= client->config.reconnect_max_attempts) {
             ESP_LOGW(TAG, "Max reconnection attempts reached");
             break;
         }
-        
+
         client->reconnect_attempts++;
         client->state = STREAM_SIGNALING_STATE_RECONNECTING;
-        
-        ESP_LOGI(TAG, "Reconnecting (attempt %lu)...", client->reconnect_attempts);
+
+        ESP_LOGI(TAG, "Reconnecting (attempt %lu)...", (unsigned long)client->reconnect_attempts);
         vTaskDelay(pdMS_TO_TICKS(client->config.reconnect_interval_ms));
-        
-        // Clear event bits
-        xEventGroupClearBits(client->event_group, WS_DISCONNECTED_BIT | WS_ERROR_BIT);
-        
-        // Attempt reconnection
+
+        if (!client->should_reconnect) {
+            break;
+        }
+
+        if (esp_websocket_client_is_connected(client->ws_client)) {
+            ESP_LOGI(TAG, "Coordinator WS reconnected during backoff, skipping start");
+            xEventGroupClearBits(client->event_group, wait_bits);
+            client->reconnect_attempts = 0;
+            continue;
+        }
+
+        xEventGroupClearBits(client->event_group, wait_bits);
+
         stream_video_error_t err = stream_signaling_client_connect(client);
         if (err != STREAM_VIDEO_ERR_OK) {
             ESP_LOGE(TAG, "Reconnection failed: %d", err);
         }
     }
-    
+
     vTaskDelete(NULL);
 }
 
@@ -382,7 +395,8 @@ stream_video_error_t stream_signaling_client_create(
 
     esp_websocket_client_config_t ws_cfg = {
         .uri = client->signaling_url,
-        .reconnect_timeout_ms = 0,
+        .reconnect_timeout_ms = 10000,
+        .network_timeout_ms = 10000,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .task_stack = 8192,
         .headers = STREAM_WS_HEADERS,
