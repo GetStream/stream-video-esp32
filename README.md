@@ -1,8 +1,14 @@
 # Stream Video ESP32 SDK
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE.txt)
+This is the official ESP-32 SDK for Stream Video, a platform for building apps with video and audio calling support. The repository includes an SDK and examples on how to use Stream Video on ESP-32 devices. The supported devices are **ESP32-S3** (example provided) and **ESP32-P4**.
 
-Real-time video, audio, and signaling for ESP32 with Stream's SFU. Supports **ESP32-S3** (example provided) and **ESP32-P4**.
+## What is Stream?
+
+Stream allows developers to rapidly deploy scalable feeds, chat messaging and video with an industry leading 99.999% uptime SLA guarantee.
+
+With Stream's video components, you can use our SDK to build in-app video calling, audio rooms, audio calls, or live streaming. The best place to get started is with our [docs](https://getstream.io/video/docs/).
+
+All calls run on Stream's network of edge servers around the world, ensuring optimal latency and reliability.
 
 ## Features
 
@@ -62,6 +68,12 @@ Fetched automatically via Component Manager:
 
 WiFi and tokens: use menuconfig or `sdkconfig.defaults`; do not commit `sdkconfig` or secrets.
 
-## License
+## 👩‍💻 Free for Makers 👨‍💻
 
-[Apache-2.0](LICENSE.txt). [Contributing](CONTRIBUTING.md).
+Stream is free for most side and hobby projects. To qualify, your project/company needs to have < 5 team members and < $10k in monthly revenue. Makers get $100 in monthly credit for video for free.
+
+## We are hiring
+
+We've closed a [\$38 million Series B funding round](https://techcrunch.com/2021/03/04/stream-raises-38m-as-its-chat-and-activity-feed-apis-power-communications-for-1b-users/) in 2021 and we keep actively growing.
+Our APIs are used by more than a billion end-users, and you'll have a chance to make a huge impact on the product within a team of the strongest engineers all over the world.
+Check out our current openings and apply via [Stream's website](https://getstream.io/team/#jobs).
