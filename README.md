@@ -47,6 +47,11 @@ Fetched automatically via Component Manager:
    ```
    Configure Stream (env, user, call) in `main/main.c`; WiFi and video settings in menuconfig or `sdkconfig.defaults`. For a **menuconfig snapshot and options reference**, see [examples/minimal/BUILD_INSTRUCTIONS.md#menuconfig-reference-stream-video-example](examples/minimal/BUILD_INSTRUCTIONS.md#menuconfig-reference-stream-video-example). Details: [examples/minimal/README.md](examples/minimal/README.md).
 
+   The minimal example automatically joins this [call](https://stream-calls-dogfood.vercel.app/join/79cYh3J5JgGk). You can open it from a web browser to see the camera feed of the esp-32 device.
+
+   **Important**:
+   ESP-32 devices have weak WiFi receivers. Therefore, for smooth testing, we recommend being close to the router.
+   
 ## Docs
 
 - [API reference](docs/api_reference.md)
