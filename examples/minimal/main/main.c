@@ -30,7 +30,6 @@
 #include "lwip/inet.h"
 #include "stream_video.h"
 #include "stream_video_auth.h"
-#include "stream_video_capture.h"
 #include "sdkconfig.h"
 #include "stream_video_token.h"
 #include "app_token.h"
@@ -270,7 +269,6 @@ static void stream_flow_task(void *arg)
         .location = NULL,
         .result_cb = on_join_result,
         .user_data = NULL,
-        .sink = NULL,
         .mute_audio = false,
         .mute_video = false,
     };
@@ -375,14 +373,6 @@ void app_main(void)
 #endif
     ESP_LOGI(TAG, "========================================");
 
-#if defined(CONFIG_STREAM_VIDEO_RUN_RES_TEST)
-    ESP_LOGI(TAG, "Running resolution test; streaming is disabled.");
-    stream_video_default_capture_run_resolution_test();
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-#endif
-
     // Initialize NVS (needed for WiFi)
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -399,10 +389,6 @@ void app_main(void)
         return;
     }
     ESP_LOGI(TAG, "✓ Stream Video SDK initialized");
-
-    // Use SDK default capture (ESP32-S3/P4); SDK will prepare/stop when needed
-    stream_video_set_capture_provider(stream_video_default_capture_prepare,
-                                      stream_video_default_capture_stop, NULL);
 
     // Initialize WiFi (this will trigger auth request when WiFi is ready)
     wifi_init();

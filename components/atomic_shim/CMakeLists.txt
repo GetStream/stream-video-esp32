@@ -1,9 +1,0 @@
-idf_component_register(
-    SRCS
-        "atomic_shim.c"
-    INCLUDE_DIRS
-        "."
-    REQUIRES
-        esp_peer
-    WHOLE_ARCHIVE
-)

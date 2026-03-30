@@ -8,6 +8,7 @@
 #include "stream_video_coordinator.h"
 #include "stream_video_signaling.h"
 #include "stream_video_sfu.h"
+#include "capture/capture_internal.h"
 #include "cJSON.h"
 #include <string.h>
 #include <stdlib.h>
@@ -26,14 +27,9 @@ typedef struct stream_video_client {
     stream_video_join_call_params_t params;
     EventGroupHandle_t event_group;
     TaskHandle_t join_task;
-    bool sink_from_provider;  // true if sink was obtained via capture provider
-    esp_capture_sink_handle_t pending_publish_sink;  // sink prepared on SFU connect; start_publishing uses it after join response
+    bool capture_started;
+    esp_capture_sink_handle_t pending_publish_sink;
 } stream_video_client_t;
-
-// Capture provider (optional): SDK calls when it needs a sink / on leave
-static stream_video_capture_prepare_cb_t s_capture_prepare_cb;
-static stream_video_capture_stop_cb_t s_capture_stop_cb;
-static void *s_capture_provider_user_data;
 
 // Event bits
 #define JOIN_DONE_BIT         BIT1
@@ -217,9 +213,9 @@ static void on_sfu_join_response(stream_sfu_client_handle_t sfu_client, void *us
         !client->params.mute_video);
     if (err != STREAM_VIDEO_ERR_OK) {
         ESP_LOGE(TAG, "Failed to start publishing after join response: %d", err);
-        if (client->sink_from_provider && s_capture_stop_cb) {
-            s_capture_stop_cb(s_capture_provider_user_data);
-            client->sink_from_provider = false;
+        if (client->capture_started) {
+            stream_video_default_capture_stop(NULL);
+            client->capture_started = false;
         }
     } else {
         ESP_LOGI(TAG, "Publishing started (audio=%d video=%d)",
@@ -245,16 +241,16 @@ static void on_sfu_event(stream_sfu_client_handle_t client,
             ESP_LOGI(TAG, "Ready for WebRTC negotiation");
             if (user_data) {
                 stream_video_client_t *client = (stream_video_client_t *)user_data;
-                esp_capture_sink_handle_t sink = client->params.sink;
-                client->sink_from_provider = false;
+                esp_capture_sink_handle_t sink = NULL;
+                client->capture_started = false;
                 client->pending_publish_sink = NULL;
 
-                if (!sink && s_capture_prepare_cb && (!client->params.mute_audio || !client->params.mute_video)) {
-                    stream_video_error_t prep_err = s_capture_prepare_cb(s_capture_provider_user_data, &sink);
+                if (!client->params.mute_audio || !client->params.mute_video) {
+                    stream_video_error_t prep_err = stream_video_default_capture_prepare(NULL, &sink);
                     if (prep_err == STREAM_VIDEO_ERR_OK && sink) {
-                        client->sink_from_provider = true;
-                    } else if (prep_err != STREAM_VIDEO_ERR_OK) {
-                        ESP_LOGE(TAG, "Capture provider prepare failed: %d", prep_err);
+                        client->capture_started = true;
+                    } else {
+                        ESP_LOGE(TAG, "Capture prepare failed: %d", prep_err);
                     }
                 }
 
@@ -518,20 +514,7 @@ static void join_flow_task(void *arg)
 stream_video_error_t stream_video_init(void)
 {
     ESP_LOGI(TAG, "Stream Video SDK initialized");
-    s_capture_prepare_cb = NULL;
-    s_capture_stop_cb = NULL;
-    s_capture_provider_user_data = NULL;
     return STREAM_VIDEO_ERR_OK;
-}
-
-void stream_video_set_capture_provider(
-    stream_video_capture_prepare_cb_t prepare_cb,
-    stream_video_capture_stop_cb_t stop_cb,
-    void *user_data)
-{
-    s_capture_prepare_cb = prepare_cb;
-    s_capture_stop_cb = stop_cb;
-    s_capture_provider_user_data = user_data;
 }
 
 void stream_video_deinit(void)
@@ -596,9 +579,9 @@ stream_video_error_t stream_video_leave_call(stream_video_client_handle_t client
         stream_sfu_client_destroy(client->sfu_client);
         client->sfu_client = NULL;
     }
-    if (client->sink_from_provider && s_capture_stop_cb) {
-        s_capture_stop_cb(s_capture_provider_user_data);
-        client->sink_from_provider = false;
+    if (client->capture_started) {
+        stream_video_default_capture_stop(NULL);
+        client->capture_started = false;
     }
     if (client->coordinator_client) {
         stream_signaling_client_destroy(client->coordinator_client);

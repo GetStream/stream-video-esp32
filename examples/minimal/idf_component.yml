@@ -1,19 +1,4 @@
 ## IDF Component Manager Manifest File for minimal example
-## This file allows the example to use components from the Component Manager
 
 dependencies:
-  # Stream Video SDK dependencies
-  espressif/esp_peer: "*"
-  espressif/esp_capture: "*"
-  espressif/esp_video_codec: "*"
-  # Optional audio encoder (enables Opus if available)
-  espressif/esp_audio_codec: "*"
-  
-  # WebSocket client (required for signaling)
-  espressif/esp_websocket_client: "^1.6.1"
-  
-  # Protobuf implementation (using LiveKit's nanopb from registry)
-  livekit/nanopb: "^0.4.9"
-  
-  # Note: av_render and media_lib_os might be part of ESP-IDF itself
-  # or may need to be added manually. Check ESP-IDF documentation.
+  GetStream/stream-video: "^0.1.0"

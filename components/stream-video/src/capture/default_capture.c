@@ -1,4 +1,4 @@
-#include "stream_video_capture.h"
+#include "capture_internal.h"
 #include "stream_video.h"
 #include "sdkconfig.h"
 #include "esp_log.h"

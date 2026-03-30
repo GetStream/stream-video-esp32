@@ -1,10 +1,6 @@
 ## IDF Component Manager Manifest File
-## See https://docs.espressif.com/projects/idf-component-manager/en/latest/reference/manifest_file.html
-
-description: "Stream Video SDK for ESP32 - Real-time video, audio, and data for embedded projects"
-url: "https://github.com/GetStream/stream-video-esp32"
-version: "0.1.0"
-license: "Apache-2.0"
+## Root-level manifest for the stream-video-esp32 repository (local development).
+## The publishable component lives at components/stream-video/.
 
 dependencies:
   espressif/esp_peer: "^1.2.7"
@@ -12,8 +8,5 @@ dependencies:
   espressif/esp_websocket_client: "^1.6.1"
   espressif/cjson: "*"
   livekit/nanopb: "^0.4.9"
-  # Note: av_render and media_lib_os might be part of ESP-IDF or need manual installation
-  # espressif/av_render: "*"
-  # espressif/media_lib_os: "*"
-
-
+  espressif/esp_video_codec: "*"
+  espressif/esp_audio_codec: "*"

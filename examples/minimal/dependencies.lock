@@ -85,7 +85,7 @@ dependencies:
       require: private
       version: '>=4.4'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 2.3.0
   espressif/esp_audio_effects:
@@ -145,7 +145,7 @@ dependencies:
     version: 0.7.8~1
   espressif/esp_codec_dev:
     component_hash: 
-      0d9e9bc288156eb55f79338d312e1ebf8c9dfbd5e7d13ef0f20ccb031b4e15cf
+      d67021bdb3f619cebabdfabd4507d978dfa5cddf3ae8db4752b23843cf2cc2d9
     dependencies:
     - name: idf
       require: private
@@ -153,7 +153,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.5.4
+    version: 1.5.6
   espressif/esp_h264:
     component_hash: 
       40cb64e697a8cfd787453165f6ce54e1fb8601844448eb073d677b9f9fde071e
@@ -259,7 +259,7 @@ dependencies:
       require: private
       version: '>=4.4'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 0.5.3
   espressif/esp_websocket_client:
@@ -335,11 +335,13 @@ dependencies:
     version: 0.4.9
 direct_dependencies:
 - espressif/cjson
+- espressif/esp_audio_codec
 - espressif/esp_capture
 - espressif/esp_codec_dev
 - espressif/esp_peer
+- espressif/esp_video_codec
 - espressif/esp_websocket_client
 - livekit/nanopb
-manifest_hash: 3e81574231a369a29ad01e9e5babb72e99668ac6e68eaf45b0b7758d4277c25b
+manifest_hash: 81e86f4b0dbb0250e64a8e470ea15498d8976b53d53a074828eeef1d7c6cbb0a
 target: esp32s3
 version: 2.0.0

@@ -6,7 +6,6 @@ idf_component_register(
         "."
     REQUIRES
         stream-video
-        stream-video-capture-default
         nvs_flash
         esp_wifi
         esp_netif
@@ -15,9 +14,6 @@ idf_component_register(
         esp_websocket_client
         mbedtls
         json
-        esp_capture
-        esp_video_codec
-        esp_audio_codec
         codec_board
         esp_psram
 )

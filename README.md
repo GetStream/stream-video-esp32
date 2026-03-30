@@ -6,9 +6,9 @@ Real-time video, audio, and signaling for ESP32 with Stream's SFU. Supports **ES
 
 ## Features
 
-- **Publish video and audio** — Send H.264 video and Opus audio (with AEC) to a Stream call. The SDK currently supports *publishing* only; subscribing to remote participants’ audio/video is not yet supported.
-- **Stream SFU** — Connect to Stream’s Selective Forwarding Unit over WebRTC for signaling and media.
-- **Real-time data** — Optional data channels and RPC for app-level messaging.
+- **Publish video and audio** — Send H.264 video and Opus audio (with AEC) to a Stream call. The SDK currently supports *publishing* only; subscribing to remote participants' audio/video is not yet supported.
+- **Stream SFU** — Connect to Stream's Selective Forwarding Unit over WebRTC for signaling and media.
+- **Built-in capture** — Camera and microphone capture, encoding, and publishing are handled automatically by the SDK.
 
 ## Requirements
 
@@ -21,6 +21,8 @@ Fetched automatically via Component Manager:
 
 - `espressif/esp_peer` — WebRTC
 - `espressif/esp_capture` — camera/mic
+- `espressif/esp_video_codec` — H.264 encoder
+- `espressif/esp_audio_codec` — Opus encoder
 - `espressif/esp_websocket_client` — signaling
 - `espressif/cjson` — JSON
 - `livekit/nanopb` — protobuf
@@ -32,10 +34,10 @@ Fetched automatically via Component Manager:
 2. **Add the SDK** to your project — in your project root `idf_component.yml`:
    ```yaml
    dependencies:
-     GetStream/stream-video-esp32: "^0.1.0"
+     GetStream/stream-video: "^0.1.0"
    ```
-   Or: `idf.py add-dependency "GetStream/stream-video-esp32=^0.1.0"`  
-   Then in your main component’s `CMakeLists.txt` add `stream-video` (and `stream-video-capture-default` if needed) to `REQUIRES`.  
+   Or: `idf.py add-dependency "GetStream/stream-video=^0.1.0"`  
+   Then in your main component's `CMakeLists.txt` add `stream-video` to `REQUIRES`.  
    **Full steps for a new app:** [docs/using_sdk_in_your_app.md](docs/using_sdk_in_your_app.md).
 
 3. **Run the minimal example**:
