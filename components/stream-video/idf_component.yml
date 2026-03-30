@@ -5,7 +5,11 @@ version: "0.1.0"
 description: "Stream Video SDK for ESP32 — real-time video, audio, and signaling over WebRTC"
 url: "https://github.com/GetStream/stream-video-esp32"
 repository: "https://github.com/GetStream/stream-video-esp32.git"
-license: "Apache-2.0"
+license: "Custom"
+files:
+  exclude:
+    - "proto/**"
+    - ".nanopb"
 targets:
   - esp32s3
   - esp32p4
