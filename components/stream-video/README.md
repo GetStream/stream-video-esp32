@@ -18,9 +18,11 @@ The official ESP32 SDK for [Stream Video](https://getstream.io/video/), enabling
 1. Add the dependency to your project's `idf_component.yml`:
    ```yaml
    dependencies:
-     GetStream/stream-video: "^0.1.0"
+     stream-video:
+       git: "https://github.com/GetStream/stream-video-esp32.git"
+       path: "components/stream-video"
+       version: "v0.1.0"
    ```
-   Or run: `idf.py add-dependency "GetStream/stream-video=^0.1.0"`
 
 2. In your main component's `CMakeLists.txt`, add `stream-video` to `REQUIRES`.
 

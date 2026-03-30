@@ -40,9 +40,11 @@ Fetched automatically via Component Manager:
 2. **Add the SDK** to your project — in your project root `idf_component.yml`:
    ```yaml
    dependencies:
-     GetStream/stream-video: "^0.1.0"
+     stream-video:
+       git: "https://github.com/GetStream/stream-video-esp32.git"
+       path: "components/stream-video"
+       version: "v0.1.0"
    ```
-   Or: `idf.py add-dependency "GetStream/stream-video=^0.1.0"`  
    Then in your main component's `CMakeLists.txt` add `stream-video` to `REQUIRES`.  
    **Full steps for a new app:** [docs/using_sdk_in_your_app.md](docs/using_sdk_in_your_app.md).
 
