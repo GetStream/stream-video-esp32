@@ -2,8 +2,8 @@
 
 This example demonstrates the complete flow:
 1. **App** fetches auth data (token) from a token service (e.g. Stream's pronto or your backend)
-2. App passes auth data to the SDK; **SDK** connects to coordinator, joinCall, and SFU
-3. WebRTC negotiation (to be implemented)
+2. App passes auth data to the SDK; **SDK** connects to coordinator, joins the call, and connects to the SFU
+3. SDK publishes video and audio over WebRTC
 
 ## Configuration
 
@@ -22,50 +22,22 @@ Audio publishing uses the microphone when a supported codec/mic board is present
 It uses Espressif's `codec_board` component to initialize the audio codec and provide a record handle.
 Use `idf.py menuconfig` and configure under **Stream Video SDK**:
 - Enable audio capture/publish, audio sample rate / channel count / bitrate / I2S mode
-Audio codec board selection follows the camera board pin map to avoid mismatches.
-If you need a different audio board type, add `CONFIG_STREAM_CODEC_BOARD_TYPE="..."` in
-**Stream Video SDK** (menuconfig) or in `sdkconfig.defaults`.
-For `XIAO_ESP32S3_Sense`, audio input uses the PDM mic path automatically.
 
-Supported boards from `codec_board` (as of esp-webrtc-solution main):
-- `S3_Korvo_V2`
-- `S3_Korvo_V4`
-- `ESP32_S3_KORVO_2L`
-- `ESP32_KORVO_V1`m
-- `ESP32_LYRAT_V43`
-- `LYRAT_MINI_V1`
-- `ESP32S3_BOX`
-- `ESP32_S3_BOX_3`
-- `ESP32S3_EYE`
-- `ESP32_P4_DEV_V14`
-- `ESP32_P4_EYE`
-- `ESP32_S3_EchoEar`
-- `XIAO_ESP32S3_Sense`
-- `ATOMS3_ECHO_BASE`
-- `XD_AIOT_C3`
-- `ESP_SPOT`
-- `DUMMY_CODEC_BOARD`
+The SDK should work on any ESP32-S3 board with a camera and PSRAM. The following boards have been tested:
+- **ESP32-S3 WROOM** (generic S3 wiring — default)
+- **XIAO ESP32-S3 Sense** (OV2640/OV3660, PDM mic)
 
-If your board is not listed:
-1. Build once so the component is downloaded.
-2. Copy `examples/minimal/managed_components/tempotian__codec_board` to
-   `examples/minimal/components/codec_board`.
-3. Edit `examples/minimal/components/codec_board/board_cfg.txt` and add your board
-   definition (pins + codec type).
-4. Set `CONFIG_STREAM_CODEC_BOARD_TYPE` to your new board name and rebuild.
+Select your board in `idf.py menuconfig` under **Stream Video SDK → Camera Board**. The board selection sets the correct camera pin map and audio codec type automatically. For `XIAO_ESP32S3_Sense`, audio input uses the PDM mic path.
 
-If you see `Failed to resolve component 'codec_board'` during build:
-- Your ESP-IDF component registry does not have `tempotian/codec_board`.
-- Manually vendor the component by copying it into
-  `examples/minimal/components/codec_board` (from
-  `https://github.com/espressif/esp-webrtc-solution/tree/main/components/codec_board`)
-  and rebuild.
+**Using a different board?** The SDK relies on Espressif's `codec_board` component for audio codec initialization, which supports many additional boards. If your board is not listed in menuconfig:
+1. Set `CONFIG_STREAM_CODEC_BOARD_TYPE` in menuconfig or `sdkconfig.defaults` to a board name supported by `codec_board`.
+2. If needed, vendor the component into `examples/minimal/components/codec_board` and add your board definition. See the [codec_board source](https://github.com/espressif/esp-webrtc-solution/tree/main/components/codec_board) for details.
 
 ## Prerequisites
 
 1. **ESP-IDF v5.4 or higher** - Install from [ESP-IDF Getting Started](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/)
 
-2. **Token service** - The **app** fetches the token. Use your own backend or Stream's . The example includes `app_token.c` which calls:
+2. **Token service** - The **app** fetches the token. Use your own backend or Stream's pronto. The example includes `app_token.c` which calls:
    ```
    GET <STREAM_AUTH_BASE_URL>api/auth/create-token?environment=xxx&user_id=xxx&exp=xxx
    ```
@@ -94,15 +66,18 @@ cd examples/minimal
 idf.py set-target esp32s3
 ```
 
-### 4. Select partition table
-This example defaults to an 8MB layout. For 16MB boards, switch to the
-provided 16MB table:
+### 4. Configure menuconfig
 ```bash
 idf.py menuconfig
 ```
-Then set:
-`Partition Table → Partition Table (Custom) → Custom partition table CSV` to
-`partitions_16mb.csv`.
+
+**Two required settings:**
+1. **WiFi** — Under **Stream Video Example**, set your WiFi SSID and password.
+2. **Board selection** — Under **Stream Video SDK → Camera Board**, choose the board that matches your hardware. This sets the correct camera pin map and audio codec. Using the wrong board will cause capture failures at runtime.
+
+**Optional:** For 16MB flash boards, change the partition table:
+`Partition Table → Partition Table (Custom) → Custom partition table CSV` →
+`partitions_16mb.csv` (default is 8MB).
 
 ### 5. Build the project
 ```bash
@@ -118,40 +93,6 @@ idf.py flash
 ### 7. Monitor output
 ```bash
 idf.py monitor
-```
-
-## Expected Output
-
-When running successfully, you should see:
-
-```
-I (1234) main: ========================================
-I (1234) main: Stream Video ESP32-S3 - Complete Flow
-I (1234) main: ========================================
-I (1234) main: Configuration:
-I (1234) main:   Environment: production
-I (1234) main:   User ID: user123
-I (1234) main:   Call Type: default
-I (1234) main:   Call ID: your-call-id
-I (1234) main: ========================================
-I (1234) main: ✓ NVS initialized
-I (1234) main: ✓ Stream Video SDK initialized
-I (1234) main: WiFi initialized, connecting to MyWiFi...
-I (2345) main: WiFi connected, IP: 192.168.1.100
-I (2345) main: WiFi connected, starting Stream Video flow...
-I (2345) main: ✓ Auth data received
-I (2345) main:   User ID: user123
-I (2345) main:   API Key: my-app:abc123
-I (2345) main: Connecting to coordinator WebSocket...
-I (3456) main: ✓ Connected to coordinator WebSocket
-I (3456) main: Sending connect message to coordinator...
-I (3456) main: Joining call: type=default, id=your-call-id
-I (4567) main: ✓ Join call successful
-I (4567) main:   Call ID: your-call-id
-I (4567) main:   SFU WebSocket: wss://sfu-123.getstream.io/video/ws
-I (4567) main: ✓ Connecting to SFU WebSocket...
-I (5678) main: ✓ Connected to SFU WebSocket
-I (5678) main: Ready for WebRTC negotiation
 ```
 
 ## Troubleshooting
@@ -187,5 +128,4 @@ This example already implements auth, coordinator and SFU connection, join call,
 ## See Also
 
 - [Example Configuration Guide](../../docs/example_configuration.md)
-- [Coordinator and SFU Flow](../../docs/coordinator_sfu_flow.md)
-- [SDK Flow After Auth](../../docs/sdk_flow_after_auth.md)
+- [Auth Flow](../../docs/auth_flow.md)

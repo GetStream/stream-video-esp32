@@ -1,6 +1,6 @@
 # Stream Video ESP32 SDK
 
-This is the official ESP-32 SDK for Stream Video, a platform for building apps with video and audio calling support. The repository includes an SDK and examples on how to use Stream Video on ESP-32 devices. The supported devices are **ESP32-S3** (example provided) and **ESP32-P4**.
+This is the official ESP32 SDK for Stream Video, a platform for building apps with video and audio calling support. The repository includes an SDK and examples on how to use Stream Video on ESP32 devices. The supported devices are **ESP32-S3** (example provided) and **ESP32-P4**.
 
 ## What is Stream?
 
@@ -12,7 +12,7 @@ All calls run on Stream's network of edge servers around the world, ensuring opt
 
 ## Features
 
-- **Publish video and audio** — Send H.264 video and Opus audio (with AEC) to a Stream call. The SDK currently supports *publishing* only; subscribing to remote participants' audio/video is not yet supported.
+- **Publish video and audio** — Send H.264 video and Opus audio to a Stream call. The SDK currently supports *publishing* only; subscribing to remote participants' audio/video is not yet supported.
 - **Stream SFU** — Connect to Stream's Selective Forwarding Unit over WebRTC for signaling and media.
 - **Built-in capture** — Camera and microphone capture, encoding, and publishing are handled automatically by the SDK.
 
@@ -50,15 +50,20 @@ Fetched automatically via Component Manager:
    ```bash
    cd examples/minimal
    idf.py set-target esp32s3
-   idf.py menuconfig   # WiFi + Stream Video Example
+   idf.py menuconfig
    idf.py build flash monitor
    ```
-   Configure Stream (env, user, call) in `main/main.c`; WiFi and video settings in menuconfig or `sdkconfig.defaults`. For a **menuconfig snapshot and options reference**, see [examples/minimal/BUILD_INSTRUCTIONS.md#menuconfig-reference-stream-video-example](examples/minimal/BUILD_INSTRUCTIONS.md#menuconfig-reference-stream-video-example). Details: [examples/minimal/README.md](examples/minimal/README.md).
 
-   The minimal example automatically joins this [call](https://stream-calls-dogfood.vercel.app/join/79cYh3J5JgGk). You can open it from a web browser to see the camera feed of the esp-32 device.
+   **Before building, configure two things in `idf.py menuconfig`:**
+   - **WiFi** — Go to **Stream Video Example** and set your WiFi SSID and password.
+   - **Board selection** — Choose the correct board for your hardware (this sets the right camera pin map and audio codec). See the [supported boards list](examples/minimal/README.md#audio-capture) in the example README.
+
+   Configure Stream credentials (environment, user, call) in `main/main.c`. For a **menuconfig snapshot and options reference**, see [BUILD_INSTRUCTIONS.md](examples/minimal/BUILD_INSTRUCTIONS.md#menuconfig-reference). Details: [examples/minimal/README.md](examples/minimal/README.md).
+
+   The minimal example automatically joins this [call](https://pronto.getstream.io/join/79cYh3J5JgGk). You can open it from a web browser to see the camera feed of the ESP32 device.
 
    **Important**:
-   ESP-32 devices have weak WiFi receivers. Therefore, for smooth testing, we recommend being close to the router.
+   ESP32 devices have weak WiFi receivers. For smooth testing, we recommend being close to the router.
    
 ## Docs
 

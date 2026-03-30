@@ -128,7 +128,7 @@ Settings are stored in `sdkconfig` in the example directory (do not commit if it
 
 ## Build Steps
 
-**Note:** Pre-generated protobuf sources (`components/stream-video-protobuf/generated/`) are committed in the repo, so you can clone and build without installing `protoc` or nanopb. If you change any `.proto` files, you need `protoc` and `pip install nanopb` to regenerate those files and then commit the updated `generated/` directory.
+**Note:** Pre-generated protobuf sources (`components/stream-video/generated/`) are committed in the repo, so you can clone and build without installing `protoc` or nanopb. If you change any `.proto` files, you need `protoc` and `pip install nanopb` to regenerate those files and then commit the updated `generated/` directory.
 
 ### 1. Navigate to Example Directory
 
@@ -146,18 +146,15 @@ This will:
 - Create `sdkconfig` file
 - Configure the project for ESP32-S3
 
-### 3. Configure (Optional)
-
-If you need to customize settings:
+### 3. Configure (Required)
 
 ```bash
 idf.py menuconfig
 ```
 
-Common settings:
-- **Component config → ESP32S3-Specific** → CPU frequency
-- **Component config → Wi-Fi** → WiFi settings
-- **Component config → mbedTLS** → TLS settings
+**Two required settings:**
+1. **WiFi** — Under **Stream Video Example**, set your WiFi SSID and password.
+2. **Board selection** — Under **Stream Video SDK → Camera Board**, choose the board that matches your hardware.
 
 ### 4. Build the Project
 
@@ -255,6 +252,7 @@ All-in-one command:
 ```bash
 cd examples/minimal
 idf.py set-target esp32s3
+idf.py menuconfig        # Set WiFi + board
 idf.py build flash monitor
 ```
 
@@ -312,6 +310,7 @@ idf.py build flash monitor
 # Setup (one time)
 . ~/esp/esp-idf/export.sh  # Linux/macOS
 idf.py set-target esp32s3
+idf.py menuconfig          # Set WiFi + board
 
 # Build and flash (every time)
 cd examples/minimal
