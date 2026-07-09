@@ -321,6 +321,19 @@ static const char *sfu_track_type_to_str(stream_video_sfu_models_TrackType type)
     }
 }
 
+static bool sfu_buf_advance(size_t *pos, size_t cap, int written)
+{
+    if (written < 0 || *pos >= cap) {
+        return false;
+    }
+    size_t remaining = cap - *pos;
+    if ((size_t)written >= remaining) {
+        return false;
+    }
+    *pos += (size_t)written;
+    return true;
+}
+
 static char *sfu_escape_json_string(const char *input)
 {
     if (!input) {
@@ -1536,34 +1549,55 @@ static stream_video_error_t sfu_send_set_publisher_http(
         char *json = (char *)malloc(json_cap);
         if (json) {
             size_t pos = 0;
-            pos += snprintf(json + pos, json_cap - pos,
-                            "{\"sdp\":\"%s\",\"session_id\":\"%s\",\"tracks\":[",
-                            escaped_sdp,
-                            client->join_session_id);
-            for (size_t i = 0; i < track_count; ++i) {
+            bool json_ok = true;
+            int n = snprintf(json + pos, json_cap - pos,
+                             "{\"sdp\":\"%s\",\"session_id\":\"%s\",\"tracks\":[",
+                             escaped_sdp,
+                             client->join_session_id);
+            if (!sfu_buf_advance(&pos, json_cap, n)) {
+                json_ok = false;
+            }
+            for (size_t i = 0; i < track_count && json_ok; ++i) {
                 const sfu_track_info_t *t = &track_infos[i];
                 if (i > 0) {
-                    pos += snprintf(json + pos, json_cap - pos, ",");
+                    n = snprintf(json + pos, json_cap - pos, ",");
+                    if (!sfu_buf_advance(&pos, json_cap, n)) {
+                        json_ok = false;
+                        break;
+                    }
                 }
-                pos += snprintf(json + pos, json_cap - pos,
-                                "{\"track_id\":\"%s\",\"track_type\":\"%s\",\"mid\":\"%s\","
-                                "\"muted\":%s,\"codec\":{\"name\":\"%s\",\"fmtp\":\"%s\"},"
-                                "\"layers\":[{\"rid\":\"%s\",\"video_dimension\":{\"width\":%u,\"height\":%u},"
-                                "\"bitrate\":%u,\"fps\":%u}]}",
-                                t->track_id,
-                                sfu_track_type_to_str(t->track_type),
-                                t->mid,
-                                t->muted ? "true" : "false",
-                                t->codec_name,
-                                t->fmtp,
-                                t->video_rid[0] ? t->video_rid : "",
-                                (unsigned)t->video_width,
-                                (unsigned)t->video_height,
-                                (unsigned)t->video_bitrate,
-                                (unsigned)t->video_fps);
+                n = snprintf(json + pos, json_cap - pos,
+                             "{\"track_id\":\"%s\",\"track_type\":\"%s\",\"mid\":\"%s\","
+                             "\"muted\":%s,\"codec\":{\"name\":\"%s\",\"fmtp\":\"%s\"},"
+                             "\"layers\":[{\"rid\":\"%s\",\"video_dimension\":{\"width\":%u,\"height\":%u},"
+                             "\"bitrate\":%u,\"fps\":%u}]}",
+                             t->track_id,
+                             sfu_track_type_to_str(t->track_type),
+                             t->mid,
+                             t->muted ? "true" : "false",
+                             t->codec_name,
+                             t->fmtp,
+                             t->video_rid[0] ? t->video_rid : "",
+                             (unsigned)t->video_width,
+                             (unsigned)t->video_height,
+                             (unsigned)t->video_bitrate,
+                             (unsigned)t->video_fps);
+                if (!sfu_buf_advance(&pos, json_cap, n)) {
+                    json_ok = false;
+                    break;
+                }
             }
-            snprintf(json + pos, json_cap - pos, "]}");
-            ESP_LOGI(TAG, "SetPublisher request JSON: %s", json);
+            if (json_ok) {
+                n = snprintf(json + pos, json_cap - pos, "]}");
+                if (!sfu_buf_advance(&pos, json_cap, n)) {
+                    json_ok = false;
+                }
+            }
+            if (json_ok) {
+                ESP_LOGI(TAG, "SetPublisher request JSON: %s", json);
+            } else {
+                ESP_LOGW(TAG, "SetPublisher request JSON truncated (buffer too small)");
+            }
             free(json);
         }
         free(escaped_sdp);
